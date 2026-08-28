@@ -1,0 +1,19 @@
+{
+  "name": "secure-saas-fixture",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint .",
+    "build": "next build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.40.0",
+    "@supabase/supabase-js": "2.55.0",
+    "next": "15.4.0",
+    "react": "19.1.0",
+    "stripe": "18.4.0"
+  },
+  "devDependencies": {
+    "vitest": "3.2.0"
+  }
+}

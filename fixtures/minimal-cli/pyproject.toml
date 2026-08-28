@@ -1,0 +1,7 @@
+[project]
+name = "minimal-cli-fixture"
+version = "0.1.0"
+dependencies = ["pytest==8.4.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

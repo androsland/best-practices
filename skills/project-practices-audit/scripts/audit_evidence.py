@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Collect conservative, read-only repository evidence for project-practices-audit."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+
+EXCLUDED_DIRS = {
+    ".git", ".hg", ".svn", ".next", ".nuxt", ".output", ".turbo",
+    ".venv", "venv", "node_modules", "vendor", "dist", "build", "coverage",
+    "target", "Pods", "DerivedData", "__pycache__",
+}
+TEXT_SUFFIXES = {
+    ".c", ".cc", ".conf", ".cpp", ".cs", ".css", ".env", ".example",
+    ".go", ".graphql", ".h", ".html", ".java", ".js", ".json", ".jsx",
+    ".kt", ".kts", ".md", ".mjs", ".php", ".properties", ".py", ".rb",
+    ".rs", ".sh", ".sql", ".swift", ".tf", ".toml", ".ts", ".tsx",
+    ".txt", ".xml", ".yaml", ".yml",
+}
+MANIFEST_NAMES = {
+    "package.json", "pyproject.toml", "requirements.txt", "poetry.lock",
+    "Pipfile", "Pipfile.lock", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock",
+    "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile", "Gemfile.lock",
+    "composer.json", "composer.lock", "Package.swift", "Podfile", "Podfile.lock",
+}
+LOCK_NAMES = {
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+    "bun.lock", "bun.lockb", "poetry.lock", "Pipfile.lock", "uv.lock", "go.sum",
+    "Cargo.lock", "Gemfile.lock", "composer.lock", "Podfile.lock",
+}
+CODE_SUFFIXES = {".c", ".cc", ".cpp", ".cs", ".go", ".java", ".js", ".jsx", ".kt", ".php", ".py", ".rb", ".rs", ".swift", ".ts", ".tsx"}
+TEST_RE = re.compile(r"(^|/)(tests?|spec|__tests__)(/|$)|(^|/)[^/]+\.(test|spec)\.[^.]+$", re.I)
+
+
+@dataclass(frozen=True)
+class TextFile:
+    path: Path
+    rel: str
+    text: str
+
+
+class Repository:
+    def __init__(self, root: Path, max_file_bytes: int = 1_000_000) -> None:
+        self.root = root.resolve()
+        self.max_file_bytes = max_file_bytes
+        self.paths: list[Path] = []
+        self.text_files: list[TextFile] = []
+        self._inventory()
+
+    def _inventory(self) -> None:
+        for current, dirs, names in os.walk(self.root, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRS and not Path(current, d).is_symlink())
+            for name in sorted(names):
+                path = Path(current, name)
+                if path.is_symlink() or not path.is_file():
+                    continue
+                self.paths.append(path)
+                if not self._is_text_candidate(path):
+                    continue
+                try:
+                    if path.stat().st_size > self.max_file_bytes:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                self.text_files.append(TextFile(path, path.relative_to(self.root).as_posix(), text))
+
+    def _is_text_candidate(self, path: Path) -> bool:
+        return path.name in MANIFEST_NAMES or path.name.startswith("Dockerfile") or path.suffix.lower() in TEXT_SUFFIXES
+
+    def relatives(self) -> list[str]:
+        return [p.relative_to(self.root).as_posix() for p in self.paths]
+
+    def named(self, names: set[str]) -> list[str]:
+        return sorted(p.relative_to(self.root).as_posix() for p in self.paths if p.name in names)
+
+    def paths_matching(self, pattern: re.Pattern[str]) -> list[str]:
+        return sorted(rel for rel in self.relatives() if pattern.search(rel))
+
+    def grep(self, patterns: Sequence[str], *, paths: Iterable[TextFile] | None = None, limit: int = 12) -> list[str]:
+        compiled = [re.compile(pattern, re.I) for pattern in patterns]
+        matches: list[str] = []
+        for item in paths or self.text_files:
+            for line_no, line in enumerate(item.text.splitlines(), 1):
+                if any(pattern.search(line) for pattern in compiled):
+                    matches.append(f"{item.rel}:{line_no}")
+                    break
+            if len(matches) >= limit:
+                break
+        return sorted(set(matches))
+
+    def contains(self, patterns: Sequence[str]) -> bool:
+        return bool(self.grep(patterns, limit=1))
+
+    def nearest_context(self) -> list[str]:
+        manifests = sorted(p.relative_to(self.root).as_posix() for p in self.paths if p.name in MANIFEST_NAMES or p.name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"})
+        return manifests[:3] or ["."]
+
+
+def package_data(repo: Repository) -> tuple[dict, list[str]]:
+    merged: dict = {}
+    paths: list[str] = []
+    for item in repo.text_files:
+        if item.path.name != "package.json":
+            continue
+        try:
+            data = json.loads(item.text)
+        except json.JSONDecodeError:
+            continue
+        paths.append(item.rel)
+        for key in ("dependencies", "devDependencies", "peerDependencies", "scripts"):
+            merged.setdefault(key, {}).update(data.get(key, {}) if isinstance(data.get(key), dict) else {})
+    return merged, sorted(paths)
+
+
+def detect_stack(repo: Repository) -> dict:
+    rels = repo.relatives()
+    suffixes = {Path(rel).suffix.lower() for rel in rels}
+    names = {Path(rel).name for rel in rels}
+    package, package_paths = package_data(repo)
+    deps = set(package.get("dependencies", {})) | set(package.get("devDependencies", {})) | set(package.get("peerDependencies", {}))
+    languages: list[str] = []
+    for language, candidates in {
+        "javascript-typescript": {".js", ".jsx", ".mjs", ".ts", ".tsx"},
+        "python": {".py"}, "go": {".go"}, "rust": {".rs"},
+        "java-kotlin": {".java", ".kt", ".kts"}, "dotnet": {".cs"},
+        "ruby": {".rb"}, "php": {".php"}, "swift": {".swift"},
+    }.items():
+        if suffixes & candidates:
+            languages.append(language)
+
+    frameworks = sorted({
+        label for label, packages in {
+            "nextjs": {"next"}, "react": {"react"}, "express": {"express"},
+            "fastify": {"fastify"}, "nestjs": {"@nestjs/core"}, "supabase": {"@supabase/supabase-js"},
+            "stripe": {"stripe"}, "openai": {"openai"}, "anthropic": {"@anthropic-ai/sdk"},
+        }.items() if deps & packages
+    })
+    python_blob = "\n".join(i.text for i in repo.text_files if i.path.name in {"pyproject.toml", "requirements.txt", "Pipfile"})
+    for label, pattern in {"django": r"\bdjango\b", "fastapi": r"\bfastapi\b", "flask": r"\bflask\b", "sqlalchemy": r"\bsqlalchemy\b", "pytest": r"\bpytest\b", "openai": r"\bopenai\b", "anthropic": r"\banthropic\b"}.items():
+        if re.search(pattern, python_blob, re.I):
+            frameworks.append(label)
+    frameworks = sorted(set(frameworks))
+
+    code = bool(suffixes & CODE_SUFFIXES)
+    infrastructure = any(re.search(r"(^|/)(Dockerfile[^/]*|docker-compose\.ya?ml|terraform/|infra/|k8s/|\.github/workflows/)", rel, re.I) for rel in rels) or ".tf" in suffixes
+    network_service = bool(set(frameworks) & {"nextjs", "express", "fastify", "nestjs", "django", "fastapi", "flask"}) or repo.contains([r"\b(app\.(get|post|put|patch|delete)|router\.(get|post|put|patch|delete)|@app\.(get|post|put|patch|delete))\b"])
+    auth = repo.contains([r"\b(login|sign[-_ ]?in|password[-_ ]?reset|auth(n|entication|orization)?)\b"])
+    supabase = "supabase" in frameworks or any(rel.startswith("supabase/") for rel in rels)
+    webhook = repo.contains([r"\bwebhook\b", r"stripe-signature", r"constructEvent"])
+    durable_data = bool(set(frameworks) & {"supabase", "sqlalchemy", "django"}) or repo.contains([r"\b(postgres|postgresql|mysql|sqlite|mongodb|prisma|drizzle|database_url)\b"]) or any("migration" in rel.lower() for rel in rels)
+    tenant_evidence = repo.grep([r"\b(tenant_id|tenantId|workspace_id|workspaceId|organization_id|organizationId)\b"], limit=8)
+    multitenant = bool(tenant_evidence)
+    onboarding_path = any(re.search(r"(^|/)(onboarding|signup|activation)(/|\.|$)", rel, re.I) for rel in rels)
+    end_user_product = bool(set(frameworks) & {"nextjs", "react", "django"}) and (onboarding_path or repo.contains([r"\b(sign[-_ ]?up|onboarding|welcome|activation)[_ -]?"]))
+    ai = bool(set(frameworks) & {"openai", "anthropic"}) or repo.contains([r"\b(openai|anthropic|llm|language model|model provider)\b"])
+    agent_extensions = any(re.search(r"(^|/)(\.mcp\.json|SKILL\.md|CLAUDE\.md|AGENTS\.md|\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json)$", rel) for rel in rels)
+    mobile = any(name in names for name in {"AndroidManifest.xml", "Podfile", "capacitor.config.ts", "capacitor.config.json"}) or any(rel.endswith(".xcodeproj/project.pbxproj") for rel in rels)
+    return {
+        "languages": sorted(languages),
+        "frameworks": frameworks,
+        "manifests": sorted(set(package_paths + repo.named(MANIFEST_NAMES))),
+        "surfaces": {
+            "code": code, "network_service": network_service, "authentication": auth,
+            "supabase": supabase, "webhooks": webhook, "durable_data": durable_data,
+            "multitenant": multitenant, "infrastructure_deployment": infrastructure,
+            "end_user_product": end_user_product, "ai_usage": ai,
+            "agent_extensions": agent_extensions, "mobile": mobile,
+        },
+        "surface_evidence": {"multitenant": tenant_evidence},
+    }
+
+
+def finding(check_id: str, domain: str, status: str, severity: str, confidence: str,
+            evidence: Sequence[str], rationale: str, remediation: str | None,
+            *, advisory: bool = False) -> dict:
+    return {
+        "check_id": check_id, "domain": domain, "status": status,
+        "severity": "INFO" if status == "NOT_APPLICABLE" else severity,
+        "confidence": confidence, "evidence_paths": list(evidence) or ["."],
+        "rationale": rationale, "remediation": remediation,
+        "advisory": advisory,
+    }
+
+
+def collect_findings(repo: Repository, stack: dict) -> list[dict]:
+    surfaces = stack["surfaces"]
+    context = repo.nearest_context()
+    findings: list[dict] = []
+
+    test_paths = repo.paths_matching(TEST_RE)
+    package, package_paths = package_data(repo)
+    scripts = package.get("scripts", {})
+    test_commands = [f"{path}#scripts" for path in package_paths if any(k in scripts for k in ("test", "test:unit", "check"))]
+    python_test_cmd = repo.grep([r"\b(pytest|unittest)\b"], paths=(i for i in repo.text_files if i.path.name in {"pyproject.toml", "tox.ini", "Makefile"}))
+    if not surfaces["code"]:
+        findings.append(finding("DEV-TEST-001", "coding-ai", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No executable source-code surface was detected.", None))
+    elif test_paths and (test_commands or python_test_cmd):
+        findings.append(finding("DEV-TEST-001", "coding-ai", "PASS", "HIGH", "HIGH", (test_paths[:6] + test_commands + python_test_cmd)[:10], "Automated tests and a runnable test command were found.", None))
+    elif test_paths or test_commands or python_test_cmd:
+        findings.append(finding("DEV-TEST-001", "coding-ai", "PARTIAL", "HIGH", "HIGH", (test_paths[:6] + test_commands + python_test_cmd) or context, "Only tests or a runnable test command were found, not both.", "Add representative automated tests and expose a repeatable test command used by contributors or CI."))
+    else:
+        findings.append(finding("DEV-TEST-001", "coding-ai", "MISSING", "HIGH", "HIGH", context + ["(searched test/spec directories and manifest scripts)"], "The nontrivial codebase has no discovered automated tests or runnable test command.", "Add risk-focused tests and a repeatable command that runs them."))
+
+    ci_paths = [r for r in repo.relatives() if re.search(r"(^|/)\.github/workflows/.*\.ya?ml$|(^|/)(\.gitlab-ci\.yml|azure-pipelines\.ya?ml|Jenkinsfile)$", r)]
+    ci_validation = repo.grep([r"\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|lint|check|build)\b", r"\b(pytest|go test|cargo test|mvn test|gradle test|dotnet test)\b"], paths=(i for i in repo.text_files if i.rel in ci_paths))
+    if not surfaces["code"]:
+        findings.append(finding("DEV-CI-001", "coding-ai", "NOT_APPLICABLE", "MEDIUM", "HIGH", context, "No executable source-code surface was detected.", None))
+    elif ci_paths and ci_validation:
+        findings.append(finding("DEV-CI-001", "coding-ai", "PASS", "MEDIUM", "HIGH", ci_validation, "A checked-in CI workflow invokes project validation.", None))
+    elif ci_paths:
+        findings.append(finding("DEV-CI-001", "coding-ai", "PARTIAL", "MEDIUM", "HIGH", ci_paths[:8], "CI configuration exists but no recognizable test, lint, check, or build invocation was found.", "Run the project's relevant validation commands on pull requests."))
+    else:
+        findings.append(finding("DEV-CI-001", "coding-ai", "NOT_VERIFIABLE", "MEDIUM", "MEDIUM", context + ["(searched common CI configuration paths)"], "No checked-in CI was found; validation may be configured outside the repository.", "Document the external CI or add a checked-in workflow that runs applicable validation."))
+
+    dependency_manifests = [p for p in stack["manifests"] if Path(p).name not in LOCK_NAMES]
+    locks = repo.named(LOCK_NAMES)
+    if not dependency_manifests:
+        findings.append(finding("DEV-DEPS-001", "coding-ai", "NOT_APPLICABLE", "MEDIUM", "HIGH", context, "No dependency manifest was detected.", None))
+    elif locks:
+        findings.append(finding("DEV-DEPS-001", "coding-ai", "PASS", "MEDIUM", "HIGH", locks, "A reproducibility lock/checksum file accompanies dependency manifests.", None))
+    else:
+        findings.append(finding("DEV-DEPS-001", "coding-ai", "MISSING", "MEDIUM", "HIGH", dependency_manifests + ["(searched ecosystem lockfiles)"], "Dependency manifests exist without a discovered lock/checksum file.", "Generate and commit the ecosystem's supported lock/checksum file."))
+
+    secret_evidence: list[str] = []
+    private_key_re = re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
+    assignment_re = re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"]?(?!\$\{|process\.env|os\.environ|env\.|<|example|changeme|test|dummy)[A-Za-z0-9_./+=-]{16,}")
+    for item in repo.text_files:
+        if item.path.name.endswith((".example", ".sample")) or "/fixtures/" in f"/{item.rel}/":
+            continue
+        for line_no, line in enumerate(item.text.splitlines(), 1):
+            if private_key_re.search(line) or assignment_re.search(line):
+                secret_evidence.append(f"{item.rel}:{line_no}")
+                break
+    if secret_evidence:
+        findings.append(finding("SEC-SECRETS-001", "application-security", "MISSING", "CRITICAL", "MEDIUM", secret_evidence[:10], "Potential committed credential material was detected; values were intentionally not reported.", "Validate each match, revoke and rotate real credentials, remove them from current files and history, and use secret injection."))
+    else:
+        findings.append(finding("SEC-SECRETS-001", "application-security", "PASS", "CRITICAL", "MEDIUM", context + ["(bounded text scan; secret values not emitted)"], "No obvious committed private-key marker or high-confidence credential assignment was detected by the bounded scan.", None))
+
+    if not (surfaces["network_service"] and surfaces["authentication"]):
+        findings.append(finding("SEC-AUTHZ-001", "application-security", "NOT_APPLICABLE", "CRITICAL", "MEDIUM", context, "No authenticated network-service surface was confidently detected.", None))
+    else:
+        authz_evidence = repo.grep([r"\b(authoriz(e|ation)|permission|policy|canAccess|requireRole|owner_id|user_id)\b"])
+        findings.append(finding("SEC-AUTHZ-001", "application-security", "NOT_VERIFIABLE", "CRITICAL", "MEDIUM", authz_evidence or context, "Authorization correctness and object scope require route/data-flow inspection; keyword evidence cannot prove coverage.", "Inspect every protected operation and add negative unauthorized and cross-user tests."))
+
+    if not surfaces["supabase"]:
+        findings.append(finding("SEC-RLS-001", "application-security", "NOT_APPLICABLE", "CRITICAL", "HIGH", context, "No Supabase/PostgREST surface was detected.", None))
+    else:
+        rls = repo.grep([r"enable\s+row\s+level\s+security"])
+        policies = repo.grep([r"create\s+policy"])
+        if rls and policies:
+            findings.append(finding("SEC-RLS-001", "application-security", "PASS", "CRITICAL", "HIGH", rls + policies, "Migrations enable RLS and define policies; role/grant behavior still warrants targeted tests.", None))
+        elif rls or policies:
+            findings.append(finding("SEC-RLS-001", "application-security", "PARTIAL", "CRITICAL", "HIGH", rls + policies, "Only part of the expected RLS enablement/policy evidence was found.", "Enable RLS for every exposed table, define least-privilege policies/grants, and add anon/authenticated role tests."))
+        else:
+            findings.append(finding("SEC-RLS-001", "application-security", "MISSING", "CRITICAL", "HIGH", context + ["(searched SQL/migrations for RLS and policies)"], "Supabase was detected but no checked-in RLS enablement or policy evidence was found.", "Add reviewed RLS/grant migrations and negative role/row access tests for exposed schemas."))
+
+    if not surfaces["webhooks"]:
+        findings.append(finding("SEC-WEBHOOK-001", "application-security", "NOT_APPLICABLE", "CRITICAL", "HIGH", context, "No webhook handler surface was detected.", None))
+    else:
+        signature = repo.grep([r"stripe-signature", r"constructEvent", r"verify(Webhook|Signature|Header)", r"timingSafeEqual"])
+        idempotency = repo.grep([r"\b(event_id|eventId|idempot|processed_events|on conflict|unique)\b"])
+        if signature and idempotency:
+            findings.append(finding("SEC-WEBHOOK-001", "application-security", "PASS", "CRITICAL", "MEDIUM", signature + idempotency, "Signature-verification and duplicate-delivery boundary signals were found; inspect ordering before side effects.", None))
+        elif signature or idempotency:
+            findings.append(finding("SEC-WEBHOOK-001", "application-security", "PARTIAL", "CRITICAL", "MEDIUM", signature + idempotency, "Only signature verification or retry/idempotency evidence was found.", "Verify the provider signature over the required raw body before effects and persist an idempotency boundary for retries."))
+        else:
+            findings.append(finding("SEC-WEBHOOK-001", "application-security", "MISSING", "CRITICAL", "MEDIUM", context + ["(searched webhook implementation for signature and idempotency signals)"], "A webhook surface exists without recognizable authenticity or duplicate-delivery controls.", "Use the provider's official signature verifier before side effects and make repeated event delivery safe."))
+
+    if not surfaces["durable_data"]:
+        findings.append(finding("REL-RPO-001", "data-reliability", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No durable data surface was detected.", None))
+        findings.append(finding("REL-RESTORE-001", "data-reliability", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No durable data surface was detected.", None))
+    else:
+        rpo_rto = repo.grep([r"\bRPO\b", r"\bRTO\b"])
+        restore = repo.grep([r"\brestore\b", r"recovery drill", r"restore test"])
+        if len(rpo_rto) >= 1:
+            findings.append(finding("REL-RPO-001", "data-reliability", "PASS", "HIGH", "MEDIUM", rpo_rto, "Repository documentation/configuration mentions measurable recovery objectives; confirm ownership and production alignment.", None))
+        else:
+            findings.append(finding("REL-RPO-001", "data-reliability", "NOT_VERIFIABLE", "HIGH", "MEDIUM", context + ["(searched for RPO/RTO)"], "Recovery objectives may be maintained outside the repository.", "Document owned RPO/RTO targets and link backup/retention design to them."))
+        if restore:
+            drill = repo.grep([r"restore (test|drill)", r"measured.*RTO", r"recovery exercise"])
+            status = "PASS" if drill else "PARTIAL"
+            findings.append(finding("REL-RESTORE-001", "data-reliability", status, "HIGH", "MEDIUM", restore + drill, "Restore guidance exists" + (" with drill evidence." if drill else " but no clear timed drill evidence."), None if drill else "Run an isolated restore drill, verify critical paths, measure against RTO, and record the result."))
+        else:
+            findings.append(finding("REL-RESTORE-001", "data-reliability", "NOT_VERIFIABLE", "HIGH", "MEDIUM", context + ["(searched for restore/runbook/drill evidence)"], "No repository restore evidence was found; recovery records may be external.", "Link or add the restore runbook and recent drill evidence without exposing sensitive operational values."))
+
+    if not surfaces["multitenant"]:
+        findings.append(finding("TEN-ISO-001", "multitenancy", "NOT_APPLICABLE", "CRITICAL", "HIGH", context, "No direct tenant/workspace/organization data-model signal was detected.", None))
+    else:
+        tenant_filters = repo.grep([r"\b(tenant_id|tenantId|workspace_id|workspaceId|organization_id|organizationId)\b"])
+        tenant_tests = [p for p in test_paths if re.search(r"tenant|workspace|organization", p, re.I)]
+        if tenant_filters and tenant_tests:
+            findings.append(finding("TEN-ISO-001", "multitenancy", "PASS", "CRITICAL", "MEDIUM", tenant_filters[:5] + tenant_tests[:5], "Tenant scoping and tenant-focused test paths were found; inspect negative cross-tenant assertions.", None))
+        else:
+            findings.append(finding("TEN-ISO-001", "multitenancy", "PARTIAL", "CRITICAL", "MEDIUM", tenant_filters or stack["surface_evidence"]["multitenant"], "Tenant identifiers were found without tenant-focused test evidence.", "Centralize tenant scoping and add negative cross-tenant read/write tests at the data boundary."))
+
+    deploy_paths = [r for r in repo.relatives() if re.search(r"(^|/)(Dockerfile|docker-compose|terraform/|infra/|k8s/|\.github/workflows/)", r, re.I) or r.endswith(".tf")]
+    if not surfaces["infrastructure_deployment"]:
+        findings.append(finding("INF-DEPLOY-001", "infrastructure-deployment", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No deployment or infrastructure surface was detected.", None))
+    else:
+        rollback = repo.grep([r"\brollback\b", r"roll back", r"previous (release|revision|image)"])
+        if deploy_paths and rollback:
+            findings.append(finding("INF-DEPLOY-001", "infrastructure-deployment", "PASS", "HIGH", "MEDIUM", deploy_paths[:5] + rollback, "Versioned deployment artifacts and rollback guidance were found.", None))
+        else:
+            findings.append(finding("INF-DEPLOY-001", "infrastructure-deployment", "PARTIAL", "HIGH", "MEDIUM", deploy_paths[:8] or context, "Deployment evidence exists without a recognizable rollback/recovery path.", "Document and test how to return to a known-good release, including data migration constraints."))
+
+    if not surfaces["end_user_product"]:
+        findings.append(finding("PROD-VALUE-001", "product-onboarding", "NOT_APPLICABLE", "MEDIUM", "HIGH", context, "No end-user signup/onboarding product surface was detected.", None))
+    else:
+        value_events = repo.grep([r"first[_ -]?value", r"activation[_ -]?event", r"onboarding[_ -]?completed", r"track\(['\"][^'\"]*(created|completed|activated)"])
+        if value_events:
+            findings.append(finding("PROD-VALUE-001", "product-onboarding", "PASS", "MEDIUM", "MEDIUM", value_events, "A first-value/activation-oriented event signal was found; confirm it represents meaningful user value.", None))
+        else:
+            findings.append(finding("PROD-VALUE-001", "product-onboarding", "NOT_VERIFIABLE", "MEDIUM", "MEDIUM", context + ["(searched onboarding/analytics code for first-value events)"], "A meaningful first-value definition may live in product analytics outside the repository.", "Name the first-value event and connect implementation and analytics evidence to it."))
+
+    if not surfaces["agent_extensions"]:
+        findings.append(finding("AI-SUPPLY-001", "ai-usage", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No agent extension, skill, MCP, or plugin surface was detected.", None))
+    else:
+        extension_paths = [r for r in repo.relatives() if re.search(r"(SKILL\.md|CLAUDE\.md|AGENTS\.md|\.mcp\.json|\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json)$", r)]
+        provenance = repo.grep([r"\b(version|commit|sha256|license|permission|network|provenance)\b"], paths=(i for i in repo.text_files if i.rel in extension_paths))
+        status = "PASS" if provenance else "PARTIAL"
+        findings.append(finding("AI-SUPPLY-001", "ai-usage", status, "HIGH", "MEDIUM", (provenance or extension_paths)[:10], "Agent-extension configuration was found" + (" with provenance/permission review signals." if provenance else " without recognizable pinning or permission/provenance guidance."), None if provenance else "Document canonical sources, versions, permissions, network destinations, review ownership, and removal for external extensions."))
+
+    if not surfaces["ai_usage"]:
+        findings.append(finding("AI-DATA-001", "ai-usage", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No product or workflow AI-provider surface was detected.", None))
+    else:
+        dataflow = repo.grep([r"\b(retention|training|personal data|PII|redact|data flow|model provider|audio upload)\b"])
+        findings.append(finding("AI-DATA-001", "ai-usage", "PASS" if dataflow else "PARTIAL", "HIGH", "MEDIUM", dataflow or context, "AI usage was found" + (" with data-flow/privacy documentation signals." if dataflow else " without recognizable data-flow, retention, or sensitive-input documentation."), None if dataflow else "Document provider destinations, sensitive inputs, retention/training settings, user disclosure/consent, and local-versus-upload behavior."))
+
+    promo = repo.grep([r"\b(10x|11x|best model|top[- ]level|unlimited|\$[0-9,]+.*(month|website)|one line of code)\b"])
+    findings.append(finding("AI-PROMO-001", "ai-usage", "NOT_VERIFIABLE" if promo else "NOT_APPLICABLE", "INFO", "HIGH" if promo else "MEDIUM", promo or context, "Promotional or subjective claims are advisory and excluded from the audit verdict." if promo else "No tracked promotional-claim signal was detected.", "Verify any material claim against a reproducible baseline before relying on it." if promo else None, advisory=True))
+    return findings
+
+
+def render_text(report: dict) -> str:
+    lines = [
+        f"Target: {report['target']}",
+        f"Verdict: {report['summary']['verdict']}",
+        "Stack: " + ", ".join(report["stack"]["languages"] + report["stack"]["frameworks"]),
+        "",
+    ]
+    for item in report["findings"]:
+        lines.append(f"[{item['status']}] {item['check_id']} ({item['severity']}, {item['confidence']})")
+        lines.append(f"  Evidence: {', '.join(item['evidence_paths'])}")
+        lines.append(f"  Rationale: {item['rationale']}")
+        if item["remediation"]:
+            lines.append(f"  Remediation: {item['remediation']}")
+    return "\n".join(lines)
+
+
+def build_report(root: Path) -> dict:
+    repo = Repository(root)
+    stack = detect_stack(repo)
+    findings = collect_findings(repo, stack)
+    counts = {status: 0 for status in ("PASS", "MISSING", "PARTIAL", "NOT_APPLICABLE", "NOT_VERIFIABLE")}
+    for item in findings:
+        counts[item["status"]] += 1
+    failures = [i for i in findings if not i["advisory"] and i["status"] in {"MISSING", "PARTIAL"}]
+    return {
+        "schema_version": 1,
+        "target": str(repo.root),
+        "read_only": True,
+        "stack": stack,
+        "findings": findings,
+        "summary": {"counts": counts, "failing_check_ids": [i["check_id"] for i in failures], "verdict": "NEEDS_WORK" if failures else "PASS"},
+        "limitations": [
+            "Static repository evidence cannot prove runtime, provider-console, organizational, or production state.",
+            "Secret scanning is bounded and redacts values; use a dedicated approved scanner for exhaustive history analysis.",
+            "Agent review must inspect relevant evidence before presenting final findings.",
+        ],
+    }
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", type=Path, help="Project root to inspect read-only")
+    parser.add_argument("--format", choices=("json", "text"), default="text")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    if not args.root.is_dir():
+        print(f"error: project root is not a directory: {args.root}", file=sys.stderr)
+        return 2
+    report = build_report(args.root)
+    if args.format == "json":
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(render_text(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

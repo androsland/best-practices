@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "project-practices",
+  "version": "0.1.1",
+  "description": "Evidence-backed whole-project practices audits and video-derived practice curation.",
+  "author": {
+    "name": "Project Practices maintainers"
+  },
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "engineering-practices",
+    "security",
+    "reliability",
+    "ai-agents"
+  ],
+  "skills": "./skills/"
+}

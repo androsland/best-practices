@@ -1,0 +1,32 @@
+{
+  "name": "project-practices",
+  "version": "0.1.1",
+  "description": "Evidence-backed whole-project practices audits and video-derived practice curation.",
+  "author": {
+    "name": "Project Practices maintainers"
+  },
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "engineering-practices",
+    "security",
+    "reliability",
+    "ai-agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Project Practices",
+    "shortDescription": "Audit and curate engineering practices.",
+    "longDescription": "Read-only, stack-aware project audits plus provenance-preserving curation of practices extracted from videos.",
+    "developerName": "Project Practices maintainers",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read-only audits",
+      "Video knowledge curation"
+    ],
+    "defaultPrompt": [
+      "Audit this project's engineering practices.",
+      "Curate practices from these video URLs."
+    ]
+  }
+}

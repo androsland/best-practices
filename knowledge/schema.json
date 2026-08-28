@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-practices.local/schema/practices.json",
+  "title": "Project Practices Catalog",
+  "type": "object",
+  "required": ["schema_version", "updated_at", "practices"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "updated_at": {"type": "string", "format": "date"},
+    "practices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "domain", "title", "statement", "enforcement_state",
+          "applicability", "confidence", "source_video_ids",
+          "authoritative_references", "verification_date", "revisions"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^practice\\.[a-z0-9.-]+$"},
+          "domain": {"type": "string"},
+          "title": {"type": "string"},
+          "statement": {"type": "string"},
+          "enforcement_state": {"enum": ["candidate", "advisory", "enforceable"]},
+          "applicability": {
+            "type": "object",
+            "required": ["description", "signals"],
+            "properties": {
+              "description": {"type": "string"},
+              "signals": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+          "source_video_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "authoritative_references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["title", "url", "supports"],
+              "properties": {
+                "title": {"type": "string"},
+                "url": {"type": "string", "format": "uri"},
+                "supports": {"type": "string"}
+              }
+            }
+          },
+          "verification_date": {"type": ["string", "null"], "format": "date"},
+          "revisions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["date", "change", "reason", "source_video_ids", "authoritative_urls"],
+              "properties": {
+                "date": {"type": "string", "format": "date"},
+                "change": {"type": "string"},
+                "reason": {"type": "string"},
+                "source_video_ids": {"type": "array", "items": {"type": "string"}},
+                "authoritative_urls": {"type": "array", "items": {"type": "string", "format": "uri"}}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
