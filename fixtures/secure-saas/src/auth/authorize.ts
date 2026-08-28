@@ -1,5 +1,11 @@
-export function authorizeWorkspace(userId: string, workspaceId: string) {
-  return policy.canAccess({ userId, workspaceId });
+export interface WorkspacePolicy {
+  canAccess(input: { userId: string; workspaceId: string }): boolean;
 }
 
-declare const policy: { canAccess(input: object): boolean };
+export function authorizeWorkspace(
+  userId: string,
+  workspaceId: string,
+  policy: WorkspacePolicy,
+) {
+  return policy.canAccess({ userId, workspaceId });
+}

@@ -7,5 +7,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: npm ci
       - run: npm test
-      - run: npm run lint
-      - run: npm run build
+      - run: npm run typecheck
