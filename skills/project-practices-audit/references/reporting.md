@@ -39,7 +39,7 @@ For absence, evidence paths name the closest relevant manifest/config plus the s
 
 ## Summary
 
-Report target, detected stack, analyzed domains, counts by status/severity, prioritized remediation, and coverage limitations. The overall verdict is:
+Report target, detected stack, analyzed domains, counts by status/severity, prioritized remediation, and coverage limitations. Include skipped candidate-file counts from `evidence_budget`; never imply a bounded scan covered files it skipped. The overall verdict is:
 
 - `PASS` when no applicable enforceable check is `MISSING` or `PARTIAL`;
 - `NEEDS_WORK` otherwise.

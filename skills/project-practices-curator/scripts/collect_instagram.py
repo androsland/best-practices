@@ -12,11 +12,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 
 REEL_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reels?/([A-Za-z0-9_-]+)", re.I)
+MAX_SELECTION_LIMIT = 500
+MAX_OFFLINE_ENUMERATION_BYTES = 5_000_000
+MAX_ERROR_CHARACTERS = 2_000
 
 
 def gallery_dl_status() -> dict:
@@ -74,6 +78,11 @@ def parse_date(value: str) -> str:
 
 
 def load_json(path: Path) -> Any:
+    if path.stat().st_size > MAX_OFFLINE_ENUMERATION_BYTES:
+        raise ValueError(
+            f"offline enumeration exceeds {MAX_OFFLINE_ENUMERATION_BYTES} bytes; "
+            "split it into a smaller JSON/JSON-lines batch"
+        )
     with path.open("r", encoding="utf-8") as handle:
         text = handle.read()
     try:
@@ -208,18 +217,50 @@ def enumerate_raw(args: argparse.Namespace) -> tuple[Any, list[str]]:
     if not shutil.which("gallery-dl"):
         raise RuntimeError("gallery-dl is not installed; install it or use --enumeration-file for saved metadata")
     command = gallery_command(args)
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "unknown gallery-dl error"
-        if args.cookies:
-            detail = detail.replace(str(args.cookies), "<redacted-cookie-file>")
-        if args.cookies_from_browser:
-            detail = detail.replace(args.cookies_from_browser, "<consented-browser-profile>")
-        raise RuntimeError(f"gallery-dl enumeration failed: {detail}")
-    try:
-        raw = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        raw = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    raw: list[Any] = []
+    max_records = max(args.limit * 3, args.limit)
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_output:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=error_output,
+            text=True,
+        )
+        assert process.stdout is not None
+        try:
+            for line_number, line in enumerate(process.stdout, 1):
+                if not line.strip():
+                    continue
+                try:
+                    raw.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    if process.poll() is None:
+                        process.terminate()
+                    raise ValueError(
+                        f"invalid gallery-dl JSON on output line {line_number}"
+                    ) from exc
+                if len(raw) >= max_records:
+                    if process.poll() is None:
+                        process.terminate()
+                    break
+        finally:
+            process.stdout.close()
+        return_code = process.wait()
+        stopped_at_bound = len(raw) >= max_records
+        if return_code != 0 and not stopped_at_bound:
+            error_output.seek(0, 2)
+            length = error_output.tell()
+            error_output.seek(max(0, length - MAX_ERROR_CHARACTERS))
+            detail = error_output.read().strip().splitlines()
+            last_line = detail[-1] if detail else "unknown gallery-dl error"
+            if args.cookies:
+                last_line = last_line.replace(str(args.cookies), "<redacted-cookie-file>")
+            if args.cookies_from_browser:
+                last_line = last_line.replace(
+                    args.cookies_from_browser,
+                    "<consented-browser-profile>",
+                )
+            raise RuntimeError(f"gallery-dl enumeration failed: {last_line}")
     return raw, safe_command(command)
 
 
@@ -245,6 +286,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("profile_url is required unless --check-dependencies is used")
     if args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.limit > MAX_SELECTION_LIMIT:
+        parser.error(f"--limit must not exceed {MAX_SELECTION_LIMIT}")
     if args.after and args.before and args.after > args.before:
         parser.error("--after must not be later than --before")
     if args.cookies_from_browser and not args.consent_browser_cookies:

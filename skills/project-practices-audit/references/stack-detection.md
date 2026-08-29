@@ -23,3 +23,7 @@ Use deterministic output as an index, then confirm important signals in source/c
 - Activate product onboarding when the repository contains an end-user product/signup experience. Libraries, CLIs, internal tools, and infrastructure repositories are normally non-applicable.
 
 Do not equate a dependency with a configured control or an example/template with production behavior.
+
+Preserve each manifest's package root when interpreting monorepos. A test script or framework dependency in one workspace is evidence for that package, not proof that a sibling package has the same control.
+
+Evidence collection is bounded to 1 MB per file and 25 MB of candidate text by default. Inspect `evidence_budget` in the JSON report. Any skipped candidate paths are a coverage limitation; reduce scope or deliberately raise `--max-total-text-bytes` when the additional memory/time cost is acceptable.

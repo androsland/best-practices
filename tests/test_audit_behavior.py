@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -54,7 +55,7 @@ class AuditBehaviorTests(unittest.TestCase):
         findings = findings_by_id(report)
         self.assertEqual(report["summary"]["verdict"], "NEEDS_WORK")
         self.assertEqual(findings["DEV-TEST-001"]["status"], "MISSING")
-        self.assertEqual(findings["DEV-DEPS-001"]["status"], "MISSING")
+        self.assertEqual(findings["DEV-DEPS-001"]["status"], "PASS")
         self.assertEqual(findings["SEC-RLS-001"]["status"], "MISSING")
         self.assertEqual(findings["SEC-WEBHOOK-001"]["status"], "MISSING")
         self.assertEqual(findings["TEN-ISO-001"]["status"], "PARTIAL")
@@ -77,6 +78,65 @@ class AuditBehaviorTests(unittest.TestCase):
             self.assertTrue(required.issubset(item))
             self.assertIn(item["status"], allowed)
             self.assertTrue(item["evidence_paths"])
+
+    def test_monorepo_package_scripts_remain_package_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            api = root / "apps" / "api"
+            web = root / "apps" / "web"
+            (api / "src").mkdir(parents=True)
+            (web / "tests").mkdir(parents=True)
+            (api / "package.json").write_text(json.dumps({
+                "name": "api",
+                "scripts": {"start": "node src/index.js"},
+                "dependencies": {"express": "5.1.0"},
+            }))
+            (api / "src" / "index.js").write_text("module.exports = {};\n")
+            (web / "package.json").write_text(json.dumps({
+                "name": "web",
+                "scripts": {"test": "vitest run"},
+                "devDependencies": {"vitest": "3.2.7"},
+            }))
+            (web / "tests" / "ui.test.js").write_text("export const covered = true;\n")
+
+            completed = subprocess.run(
+                [sys.executable, str(AUDIT), str(root), "--format", "json"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            report = json.loads(completed.stdout)
+            evidence = findings_by_id(report)["DEV-TEST-001"]["evidence_paths"]
+            self.assertIn("apps/web/package.json#scripts.test", evidence)
+            self.assertNotIn("apps/api/package.json#scripts.test", evidence)
+            self.assertEqual(
+                {item["root"] for item in report["stack"]["package_contexts"]},
+                {"apps/api", "apps/web"},
+            )
+
+    def test_aggregate_evidence_budget_reports_skipped_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.py").write_text("a = 'more than ten bytes'\n")
+            (root / "b.py").write_text("b = 'more than ten bytes'\n")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(AUDIT),
+                    str(root),
+                    "--format",
+                    "json",
+                    "--max-total-text-bytes",
+                    "10",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            report = json.loads(completed.stdout)
+            self.assertEqual(report["evidence_budget"]["max_total_text_bytes"], 10)
+            self.assertEqual(report["evidence_budget"]["skipped_text_path_count"], 2)
+            self.assertTrue(any("2 candidate file(s) were skipped" in item for item in report["limitations"]))
 
 
 if __name__ == "__main__":

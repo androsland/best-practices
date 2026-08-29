@@ -35,7 +35,8 @@ The collector invokes gallery-dl in simulate/JSON mode with default configuratio
 
 ## Limits and stopping
 
-- `--limit` caps selected unique reels after date and new-only filtering.
+- `--limit` caps selected unique reels after date and new-only filtering and is bounded to 500 per invocation. Split larger jobs into reviewed incremental batches.
+- Offline enumeration accepts JSON or JSON-lines up to 5 MB per batch; split larger exports so selection and error handling stay bounded.
 - `--new-only` excludes stable IDs already marked processed in state.
 - Dry-run prints candidates and planned command behavior without writing state or downloading.
 - Stop after the requested limit, on authentication failure, or when gallery-dl reports access/rate-limit failure. Do not loop around access controls.

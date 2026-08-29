@@ -1,11 +1,13 @@
 import json
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -13,8 +15,51 @@ ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR = ROOT / "skills/project-practices-curator/scripts/collect_instagram.py"
 STATE = ROOT / "skills/project-practices-curator/scripts/curation_state.py"
 
+STATE_SPEC = importlib.util.spec_from_file_location("project_practices_curation_state", STATE)
+assert STATE_SPEC and STATE_SPEC.loader
+STATE_MODULE = importlib.util.module_from_spec(STATE_SPEC)
+STATE_SPEC.loader.exec_module(STATE_MODULE)
+
 
 class InstagramCollectorTests(unittest.TestCase):
+    def fake_gallery_environment(self, directory: str, mode: str) -> tuple[dict, Path]:
+        executable = Path(directory) / "gallery-dl"
+        executable.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("9.9.9-fixture")
+    raise SystemExit(0)
+
+Path(os.environ["FAKE_GALLERY_ARGS"]).write_text(json.dumps(sys.argv[1:]))
+mode = os.environ["FAKE_GALLERY_MODE"]
+if mode == "failure":
+    print("failed using /sensitive/session/cookies.txt and firefox", file=sys.stderr)
+    raise SystemExit(7)
+
+records = [
+    {"shortcode": "LIVE02", "date": "2026-08-02", "username": "fixture"},
+    {"shortcode": "LIVE01", "date": "2026-08-01", "username": "fixture"},
+]
+if mode == "array":
+    print(json.dumps(records))
+else:
+    for record in records:
+        print(json.dumps(record))
+"""
+        )
+        executable.chmod(0o755)
+        args_path = Path(directory) / "args.json"
+        env = os.environ.copy()
+        env["PATH"] = directory + os.pathsep + env.get("PATH", "")
+        env["FAKE_GALLERY_ARGS"] = str(args_path)
+        env["FAKE_GALLERY_MODE"] = mode
+        return env, args_path
+
     def test_dependency_preflight_detects_missing_and_offers_install(self):
         env = os.environ.copy()
         env["PATH"] = "/definitely-missing"
@@ -110,6 +155,109 @@ class InstagramCollectorTests(unittest.TestCase):
         self.assertIn("<offline-enumeration>", completed.stdout)
         self.assertIn("<redacted-cookie-file>", completed.stdout)
 
+    def test_live_fake_gallery_supports_json_array_and_json_lines(self):
+        for mode in ("array", "lines"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                env, _ = self.fake_gallery_environment(directory, mode)
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(COLLECTOR),
+                        "https://www.instagram.com/example/",
+                        "--limit",
+                        "2",
+                        "--dry-run",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                result = json.loads(completed.stdout)
+                self.assertEqual(result["selected_count"], 2)
+                self.assertEqual(result["selected"][0]["source_id"], "instagram:LIVE02")
+
+    def test_live_fake_gallery_forwards_consented_browser_args_but_redacts_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, args_path = self.fake_gallery_environment(directory, "lines")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COLLECTOR),
+                    "https://www.instagram.com/example/",
+                    "--cookies-from-browser",
+                    "firefox",
+                    "--consent-browser-cookies",
+                    "--limit",
+                    "1",
+                    "--dry-run",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            forwarded = json.loads(args_path.read_text())
+            result = json.loads(completed.stdout)
+            self.assertIn("--cookies-from-browser", forwarded)
+            self.assertIn("firefox", forwarded)
+            self.assertNotIn("firefox", json.dumps(result["enumeration_command"]))
+            self.assertIn("<consented-browser-profile>", result["enumeration_command"])
+
+    def test_live_failure_redacts_cookie_and_browser_details(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, _ = self.fake_gallery_environment(directory, "failure")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COLLECTOR),
+                    "https://www.instagram.com/example/",
+                    "--cookies",
+                    "/sensitive/session/cookies.txt",
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertNotIn("/sensitive/session/cookies.txt", completed.stderr)
+            self.assertIn("<redacted-cookie-file>", completed.stderr)
+
+    def test_limit_and_offline_file_size_are_bounded(self):
+        rejected_limit = subprocess.run(
+            [
+                sys.executable,
+                str(COLLECTOR),
+                "https://www.instagram.com/example/",
+                "--limit",
+                "501",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(rejected_limit.returncode, 0)
+        self.assertIn("must not exceed 500", rejected_limit.stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            oversized = Path(directory) / "enumeration.json"
+            oversized.write_text(" " * 5_000_001)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COLLECTOR),
+                    "https://www.instagram.com/example/",
+                    "--enumeration-file",
+                    str(oversized),
+                    "--dry-run",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("split it into a smaller JSON/JSON-lines batch", completed.stderr)
+
 
 class CurationStateTests(unittest.TestCase):
     def setUp(self):
@@ -133,6 +281,104 @@ class CurationStateTests(unittest.TestCase):
         completed = self.run_state("source-id", str(media))
         expected = hashlib.sha256(b"fixture-video-bytes").hexdigest()
         self.assertEqual(completed.stdout.strip(), f"local-sha256:{expected}")
+
+    def test_state_init_overwrite_and_incremental_recording(self):
+        state = Path(self.temp.name) / "state.json"
+        self.run_state("init-state", str(state))
+        original = state.read_bytes()
+        rejected = self.run_state("init-state", str(state), check=False)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertEqual(state.read_bytes(), original)
+
+        self.run_state(
+            "record-source",
+            str(state),
+            "--source-id",
+            "instagram:STATE01",
+            "--url",
+            "https://www.instagram.com/reel/STATE01/",
+            "--status",
+            "failed",
+            "--claim-id",
+            "claim-a",
+            "--evidence-type",
+            "metadata-only",
+        )
+        self.run_state(
+            "record-source",
+            str(state),
+            "--source-id",
+            "instagram:STATE01",
+            "--url",
+            "https://www.instagram.com/reel/STATE01/",
+            "--status",
+            "processed",
+            "--claim-id",
+            "claim-a",
+            "--claim-id",
+            "claim-b",
+            "--evidence-type",
+            "transcript-and-frames",
+        )
+        record = json.loads(state.read_text())["processed_sources"]["instagram:STATE01"]
+        self.assertEqual(record["attempts"], 2)
+        self.assertEqual(record["status"], "processed")
+        self.assertEqual(record["claim_ids"], ["claim-a", "claim-b"])
+
+        before_failure = state.read_bytes()
+        failed = self.run_state(
+            "record-source",
+            str(state),
+            "--source-id",
+            "instagram:STATE02",
+            "--url",
+            "https://www.instagram.com/reel/STATE02/",
+            "--status",
+            "skipped",
+            "--processed-at",
+            "not-a-date",
+            "--evidence-type",
+            "metadata-only",
+            check=False,
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(state.read_bytes(), before_failure)
+
+        self.run_state("init-state", str(state), "--force")
+        self.assertEqual(json.loads(state.read_text())["processed_sources"], {})
+
+    def test_record_source_supports_every_status(self):
+        state = Path(self.temp.name) / "statuses.json"
+        for status in ("processed", "failed", "skipped"):
+            self.run_state(
+                "record-source",
+                str(state),
+                "--source-id",
+                f"instagram:{status.upper()}",
+                "--url",
+                f"https://www.instagram.com/reel/{status.upper()}/",
+                "--status",
+                status,
+                "--evidence-type",
+                "metadata-only",
+            )
+        records = json.loads(state.read_text())["processed_sources"]
+        self.assertEqual({record["status"] for record in records.values()}, {"processed", "failed", "skipped"})
+
+    def test_atomic_write_failure_preserves_valid_state(self):
+        state = Path(self.temp.name) / "atomic-state.json"
+        original = {"schema_version": 1, "updated_at": "2026-08-29", "processed_sources": {}}
+        state.write_text(json.dumps(original))
+
+        with mock.patch.object(STATE_MODULE.os, "replace", side_effect=OSError("replace failed")):
+            with self.assertRaises(OSError):
+                STATE_MODULE.atomic_write(
+                    state,
+                    {"schema_version": 1, "updated_at": "2026-08-30", "processed_sources": {"x": {}}},
+                )
+
+        self.assertEqual(json.loads(state.read_text()), original)
+        self.assertEqual(list(state.parent.glob(f".{state.name}.*")), [])
 
     def test_new_video_claim_can_only_enter_as_candidate_or_advisory(self):
         completed = self.run_state(
@@ -168,6 +414,61 @@ class CurationStateTests(unittest.TestCase):
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("require --authoritative-ref and --verified-on", completed.stderr)
+
+    def test_existing_practice_classifications_append_provenance_without_mutation(self):
+        practice_id = "practice.coding.surgical-changes"
+        initial = next(
+            item
+            for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == practice_id
+        )
+        original_statement = initial["statement"]
+        original_state = initial["enforcement_state"]
+        revision_count = len(initial["revisions"])
+
+        for classification in ("supporting", "conflicting", "obsolete", "promotional"):
+            arguments = [
+                "propose",
+                str(self.catalog),
+                "--practice-id",
+                practice_id,
+                "--domain",
+                "coding-ai",
+                "--title",
+                "Ignored existing title",
+                "--statement",
+                "This must not replace the reviewed statement.",
+                "--classification",
+                classification,
+                "--applicability",
+                "Code projects",
+                "--source-id",
+                f"instagram:{classification.upper()}",
+                "--authoritative-ref",
+                "Primary docs|https://example.com/primary|Supports fixture classification behavior.",
+                "--verified-on",
+                "2026-08-29",
+                "--reason",
+                f"Recorded {classification} evidence.",
+            ]
+            if classification == "promotional":
+                arguments.extend(["--enforcement-state", "advisory"])
+            self.run_state(*arguments)
+
+            practice = next(
+                item
+                for item in json.loads(self.catalog.read_text())["practices"]
+                if item["id"] == practice_id
+            )
+            revision_count += 1
+            self.assertEqual(practice["statement"], original_statement)
+            self.assertEqual(practice["enforcement_state"], original_state)
+            self.assertEqual(len(practice["revisions"]), revision_count)
+            revision = practice["revisions"][-1]
+            self.assertEqual(revision["change"], f"video-claim-{classification}")
+            self.assertEqual(revision["date"], "2026-08-29")
+            self.assertIn("https://example.com/primary", revision["authoritative_urls"])
+            self.assertIn(f"instagram:{classification.upper()}", practice["source_video_ids"])
 
     def test_promotion_is_separate_and_requires_behavioral_evidence(self):
         self.run_state(

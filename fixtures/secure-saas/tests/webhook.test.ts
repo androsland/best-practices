@@ -22,4 +22,68 @@ describe("webhook", () => {
     expect(insert).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it("records a verified event before publishing it", async () => {
+    const order: string[] = [];
+    const insert = vi.fn(async () => {
+      order.push("insert");
+    });
+    const publish = vi.fn(async () => {
+      order.push("publish");
+    });
+
+    await receiveStripeWebhook("raw body", "valid signature", {
+      stripe: {
+        webhooks: {
+          constructEvent: () => ({ id: "evt_fixture", type: "invoice.paid" }),
+        },
+      },
+      webhookSecret: "fixture-secret",
+      processedEvents: { insert },
+      queue: { publish },
+    });
+
+    expect(order).toEqual(["insert", "publish"]);
+    expect(insert).toHaveBeenCalledWith({ event_id: "evt_fixture", unique: true });
+    expect(publish).toHaveBeenCalledWith({
+      eventId: "evt_fixture",
+      type: "invoice.paid",
+    });
+  });
+
+  it("does not publish when durable duplicate detection rejects", async () => {
+    const publish = vi.fn();
+    await expect(
+      receiveStripeWebhook("raw body", "valid signature", {
+        stripe: {
+          webhooks: {
+            constructEvent: () => ({ id: "evt_duplicate", type: "invoice.paid" }),
+          },
+        },
+        webhookSecret: "fixture-secret",
+        processedEvents: {
+          insert: vi.fn(async () => {
+            throw new Error("unique violation");
+          }),
+        },
+        queue: { publish },
+      }),
+    ).rejects.toThrow();
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing webhook secret before verification", async () => {
+    const verify = vi.fn();
+    await expect(
+      receiveStripeWebhook("raw body", "signature", {
+        stripe: { webhooks: { constructEvent: verify } },
+        webhookSecret: "",
+        processedEvents: { insert: vi.fn() },
+        queue: { publish: vi.fn() },
+      }),
+    ).rejects.toThrow();
+
+    expect(verify).not.toHaveBeenCalled();
+  });
 });

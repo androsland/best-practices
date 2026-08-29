@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "artifact_type": "non-runnable-negative-evidence",
+  "observations": {
+    "mutable_base_image": "node:latest",
+    "runs_as_root": true,
+    "healthcheck_present": false
+  },
+  "purpose": "Static audit input only. This is not a Dockerfile, build context, or deployable container definition."
+}

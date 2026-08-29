@@ -17,6 +17,11 @@ from typing import Sequence
 
 PRACTICE_ID = re.compile(r"^practice\.[a-z0-9.-]+$")
 CLASSIFICATIONS = {"new", "supporting", "conflicting", "obsolete", "promotional"}
+CONSEQUENTIAL_DOMAINS = frozenset({
+    "application-security",
+    "data-reliability",
+    "infrastructure-deployment",
+})
 
 
 def today() -> str:
@@ -96,7 +101,7 @@ def validate_catalog(data: dict) -> list[str]:
         refs = practice.get("authoritative_references", [])
         if not isinstance(refs, list) or any(not isinstance(ref, dict) or not str(ref.get("url", "")).startswith("https://") for ref in refs):
             errors.append(f"{label}.authoritative_references is invalid")
-        if practice.get("enforcement_state") == "enforceable" and practice.get("domain") in {"application-security", "data-reliability", "infrastructure-deployment"}:
+        if practice.get("enforcement_state") == "enforceable" and practice.get("domain") in CONSEQUENTIAL_DOMAINS:
             if not refs or not practice.get("verification_date"):
                 errors.append(f"{label} is consequential/enforceable but lacks current authoritative verification")
     return errors
@@ -131,7 +136,7 @@ def command_record_source(args: argparse.Namespace) -> int:
         "status": args.status,
         "processed_at": args.processed_at,
         "attempts": int(previous.get("attempts", 0)) + 1,
-        "claim_ids": sorted(set(args.claim_id)),
+        "claim_ids": sorted(set(previous.get("claim_ids", [])) | set(args.claim_id)),
         "creator": args.creator,
         "published_date": args.published_date,
         "duration_seconds": args.duration_seconds,
@@ -170,7 +175,8 @@ def command_propose(args: argparse.Namespace) -> int:
     practices = catalog["practices"]
     existing = next((p for p in practices if p["id"] == args.practice_id), None)
     refs = args.authoritative_ref
-    if args.domain in {"application-security", "data-reliability", "infrastructure-deployment"} and args.classification in {"new", "supporting"}:
+    proposal_domain = existing["domain"] if existing else args.domain
+    if proposal_domain in CONSEQUENTIAL_DOMAINS and args.classification in {"new", "supporting"}:
         if not refs or not args.verified_on:
             raise ValueError("security, infrastructure, and reliability proposals require --authoritative-ref and --verified-on")
     if args.classification == "promotional" and args.enforcement_state != "advisory":
@@ -219,7 +225,7 @@ def command_promote(args: argparse.Namespace) -> int:
     if len(args.test_evidence) < 3:
         raise ValueError("promotion requires at least three --test-evidence entries covering pass, fail/partial, and non-applicable behavior")
     refs = args.authoritative_ref
-    if practice["domain"] in {"application-security", "data-reliability", "infrastructure-deployment"} and not refs:
+    if practice["domain"] in CONSEQUENTIAL_DOMAINS and not refs:
         raise ValueError("consequential promotion requires at least one current --authoritative-ref")
     practice["enforcement_state"] = "enforceable"
     practice["authoritative_references"] = refs or practice["authoritative_references"]
