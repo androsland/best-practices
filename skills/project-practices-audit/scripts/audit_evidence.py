@@ -61,15 +61,30 @@ class PackageContext:
 
 class Repository:
     def __init__(self, root: Path, max_file_bytes: int = 1_000_000,
-                 max_total_text_bytes: int = 25_000_000) -> None:
+                 max_total_text_bytes: int = 25_000_000,
+                 max_inventory_files: int = 100_000,
+                 max_text_candidates: int = 50_000,
+                 max_skipped_path_samples: int = 100) -> None:
         self.root = root.resolve()
         self.max_file_bytes = max_file_bytes
         self.max_total_text_bytes = max_total_text_bytes
+        self.max_inventory_files = max_inventory_files
+        self.max_text_candidates = max_text_candidates
+        self.max_skipped_path_samples = max_skipped_path_samples
         self.paths: list[Path] = []
         self.text_files: list[TextFile] = []
         self.skipped_text_paths: list[str] = []
+        self.skipped_text_path_count = 0
+        self.inventoried_file_count = 0
+        self.text_candidate_count = 0
+        self.inventory_truncated = False
         self.scanned_text_bytes = 0
         self._inventory()
+
+    def _record_skipped_text(self, rel: str) -> None:
+        self.skipped_text_path_count += 1
+        if len(self.skipped_text_paths) < self.max_skipped_path_samples:
+            self.skipped_text_paths.append(rel)
 
     def _inventory(self) -> None:
         for current, dirs, names in os.walk(self.root, followlinks=False):
@@ -78,17 +93,25 @@ class Repository:
                 path = Path(current, name)
                 if path.is_symlink() or not path.is_file():
                     continue
+                if self.inventoried_file_count >= self.max_inventory_files:
+                    self.inventory_truncated = True
+                    return
+                self.inventoried_file_count += 1
                 self.paths.append(path)
                 if not self._is_text_candidate(path):
                     continue
+                if self.text_candidate_count >= self.max_text_candidates:
+                    self.inventory_truncated = True
+                    return
+                self.text_candidate_count += 1
                 try:
                     size = path.stat().st_size
                     rel = path.relative_to(self.root).as_posix()
                     if size > self.max_file_bytes:
-                        self.skipped_text_paths.append(rel)
+                        self._record_skipped_text(rel)
                         continue
                     if self.scanned_text_bytes + size > self.max_total_text_bytes:
-                        self.skipped_text_paths.append(rel)
+                        self._record_skipped_text(rel)
                         continue
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
@@ -400,8 +423,18 @@ def render_text(report: dict) -> str:
     return "\n".join(lines)
 
 
-def build_report(root: Path, max_total_text_bytes: int = 25_000_000) -> dict:
-    repo = Repository(root, max_total_text_bytes=max_total_text_bytes)
+def build_report(
+    root: Path,
+    max_total_text_bytes: int = 25_000_000,
+    max_inventory_files: int = 100_000,
+    max_text_candidates: int = 50_000,
+) -> dict:
+    repo = Repository(
+        root,
+        max_total_text_bytes=max_total_text_bytes,
+        max_inventory_files=max_inventory_files,
+        max_text_candidates=max_text_candidates,
+    )
     stack = detect_stack(repo)
     findings = collect_findings(repo, stack)
     counts = {status: 0 for status in ("PASS", "MISSING", "PARTIAL", "NOT_APPLICABLE", "NOT_VERIFIABLE")}
@@ -418,15 +451,21 @@ def build_report(root: Path, max_total_text_bytes: int = 25_000_000) -> dict:
         "limitations": [
             "Static repository evidence cannot prove runtime, provider-console, organizational, or production state.",
             "Secret scanning is bounded and redacts values; use a dedicated approved scanner for exhaustive history analysis.",
-            f"Text evidence is bounded to {repo.max_file_bytes} bytes per file and {repo.max_total_text_bytes} bytes per project; {len(repo.skipped_text_paths)} candidate file(s) were skipped.",
+            f"Inventory is bounded to {repo.max_inventory_files} files and {repo.max_text_candidates} text candidates; truncation={str(repo.inventory_truncated).lower()}.",
+            f"Text evidence is bounded to {repo.max_file_bytes} bytes per file and {repo.max_total_text_bytes} bytes per project; {repo.skipped_text_path_count} candidate file(s) were skipped.",
             "Agent review must inspect relevant evidence before presenting final findings.",
         ],
         "evidence_budget": {
             "max_file_bytes": repo.max_file_bytes,
             "max_total_text_bytes": repo.max_total_text_bytes,
+            "max_inventory_files": repo.max_inventory_files,
+            "max_text_candidates": repo.max_text_candidates,
+            "inventoried_file_count": repo.inventoried_file_count,
+            "text_candidate_count": repo.text_candidate_count,
+            "inventory_truncated": repo.inventory_truncated,
             "scanned_text_bytes": repo.scanned_text_bytes,
-            "skipped_text_paths": repo.skipped_text_paths[:20],
-            "skipped_text_path_count": len(repo.skipped_text_paths),
+            "skipped_text_paths": repo.skipped_text_paths,
+            "skipped_text_path_count": repo.skipped_text_path_count,
         },
     }
 
@@ -437,6 +476,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--format", choices=("json", "text"), default="text")
     parser.add_argument("--max-total-text-bytes", type=int, default=25_000_000,
                         help="Aggregate text evidence budget (default: 25000000)")
+    parser.add_argument("--max-inventory-files", type=int, default=100_000,
+                        help="Maximum inventoried files before traversal stops (default: 100000)")
+    parser.add_argument("--max-text-candidates", type=int, default=50_000,
+                        help="Maximum candidate text files before traversal stops (default: 50000)")
     return parser.parse_args(argv)
 
 
@@ -448,7 +491,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.max_total_text_bytes < 1:
         print("error: --max-total-text-bytes must be positive", file=sys.stderr)
         return 2
-    report = build_report(args.root, args.max_total_text_bytes)
+    if args.max_inventory_files < 1 or args.max_text_candidates < 1:
+        print("error: inventory limits must be positive", file=sys.stderr)
+        return 2
+    report = build_report(
+        args.root,
+        args.max_total_text_bytes,
+        args.max_inventory_files,
+        args.max_text_candidates,
+    )
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

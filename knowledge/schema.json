@@ -18,29 +18,29 @@
         ],
         "properties": {
           "id": {"type": "string", "pattern": "^practice\\.[a-z0-9.-]+$"},
-          "domain": {"type": "string"},
-          "title": {"type": "string"},
-          "statement": {"type": "string"},
+          "domain": {"type": "string", "minLength": 1, "maxLength": 100},
+          "title": {"type": "string", "minLength": 1, "maxLength": 200},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
           "enforcement_state": {"enum": ["candidate", "advisory", "enforceable"]},
           "applicability": {
             "type": "object",
             "required": ["description", "signals"],
             "properties": {
-              "description": {"type": "string"},
-              "signals": {"type": "array", "items": {"type": "string"}}
+              "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+              "signals": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}}
             }
           },
           "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
-          "source_video_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "source_video_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "uniqueItems": true},
           "authoritative_references": {
             "type": "array",
             "items": {
               "type": "object",
               "required": ["title", "url", "supports"],
               "properties": {
-                "title": {"type": "string"},
-                "url": {"type": "string", "format": "uri"},
-                "supports": {"type": "string"}
+                "title": {"type": "string", "minLength": 1, "maxLength": 300},
+                "url": {"type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048},
+                "supports": {"type": "string", "minLength": 1, "maxLength": 1000}
               }
             }
           },
@@ -54,9 +54,9 @@
               "properties": {
                 "date": {"type": "string", "format": "date"},
                 "change": {"type": "string"},
-                "reason": {"type": "string"},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "source_video_ids": {"type": "array", "items": {"type": "string"}},
-                "authoritative_urls": {"type": "array", "items": {"type": "string", "format": "uri"}}
+                "authoritative_urls": {"type": "array", "items": {"type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048}}
               }
             }
           }

@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
+    "eval:live": "RUN_LIVE_AI_EVAL=1 vitest run tests/summarize.live.eval.test.ts --reporter=verbose",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

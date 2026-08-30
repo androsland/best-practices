@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 export const SUMMARY_PROMPT_VERSION = "support-summary-v1";
+export const SUMMARY_MODEL = "claude-sonnet-4-5";
 
 export type SummaryFailureReason =
   | "budget_exhausted"
@@ -47,6 +48,9 @@ export interface UsageGuard {
 }
 
 export interface SummaryPolicy {
+  rateWindowMs: number;
+  alertPercentScale: number;
+  maxWorkspaceIdCharacters: number;
   maxInputCharacters: number;
   maxSummaryCharacters: number;
   maxRequestsPerMinute: number;
@@ -59,6 +63,9 @@ export interface SummaryPolicy {
 }
 
 export const DEFAULT_SUMMARY_POLICY: Readonly<SummaryPolicy> = Object.freeze({
+  rateWindowMs: 60_000,
+  alertPercentScale: 100,
+  maxWorkspaceIdCharacters: 128,
   maxInputCharacters: 12_000,
   maxSummaryCharacters: 500,
   maxRequestsPerMinute: 20,
@@ -139,7 +146,7 @@ export class InMemoryUsageGuard implements UsageGuard {
         ? this.serviceRecord
         : emptyUsageRecord(month, nowMs);
 
-    if (nowMs - workspace.windowStartedAtMs >= 60_000) {
+    if (nowMs - workspace.windowStartedAtMs >= this.policy.rateWindowMs) {
       workspace.windowStartedAtMs = nowMs;
       workspace.requestsInWindow = 0;
     }
@@ -169,7 +176,8 @@ export class InMemoryUsageGuard implements UsageGuard {
     this.workspaceRecords.set(workspaceId, workspace);
     this.serviceRecord = service;
 
-    const alertPercent = this.policy.budgetAlertPercent / 100;
+    const alertPercent =
+      this.policy.budgetAlertPercent / this.policy.alertPercentScale;
     const alerts: BudgetAlert[] = [];
     if (
       !workspace.alertSent &&
@@ -227,7 +235,7 @@ export class AnthropicSummaryProvider implements SummaryProvider {
       : "";
     const response = await this.client.messages.create(
       {
-        model: "claude-sonnet-4-5",
+        model: SUMMARY_MODEL,
         max_tokens: 300,
         system:
           `[${SUMMARY_PROMPT_VERSION}] Return exactly one JSON object with one string field named summary. ` +
@@ -331,7 +339,7 @@ export async function summarize(
   const redactedText = input.redactedText.trim();
   if (
     !workspaceId ||
-    workspaceId.length > 128 ||
+    workspaceId.length > policy.maxWorkspaceIdCharacters ||
     !redactedText ||
     redactedText.length > policy.maxInputCharacters
   ) {

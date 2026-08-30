@@ -1,0 +1,24 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - name: Install deterministic test dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check pytest==9.0.3
+          npm --prefix fixtures/secure-saas ci
+      - name: Run all repository and fixture checks
+        run: ./scripts/validate.sh
+      - name: Audit secure fixture dependencies
+        run: npm --prefix fixtures/secure-saas audit --audit-level=high

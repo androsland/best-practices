@@ -7,13 +7,17 @@
 
 ## Development
 
-Run the deterministic checks from the repository root:
+Install the fixture test dependencies once, then run the single deterministic root check:
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 skills/project-practices-audit/scripts/audit_evidence.py fixtures/secure-saas --format json
-python3 skills/project-practices-curator/scripts/curation_state.py validate knowledge/practices.json
+python3 -m pip install pytest==9.0.3
+npm --prefix fixtures/secure-saas ci
+./scripts/validate.sh
 ```
+
+The root command runs the repository unittests, minimal-CLI pytest suite, secure-SaaS Vitest and TypeScript checks, an audit smoke test, and catalog validation. The root GitHub workflow runs the same command. The nested secure-SaaS workflow is a pinned standalone-fixture template; the root workflow is what validates it in this repository.
+
+External tool and CI provenance is recorded in [docs/supply-chain.md](docs/supply-chain.md).
 
 Claude Code can load the repository during development with `claude --plugin-dir .`. Codex validates the same shared skills through `.codex-plugin/plugin.json`.
 

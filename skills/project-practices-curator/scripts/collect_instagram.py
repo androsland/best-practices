@@ -6,35 +6,127 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import platform
+import queue
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 
 REEL_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reels?/([A-Za-z0-9_-]+)", re.I)
+GALLERY_DL_VERSION = "1.32.9"
+OVERSAMPLING_FACTOR = 3
 MAX_SELECTION_LIMIT = 500
 MAX_OFFLINE_ENUMERATION_BYTES = 5_000_000
+MAX_LIVE_ENUMERATION_BYTES = 10_000_000
 MAX_ERROR_CHARACTERS = 2_000
+VERSION_TIMEOUT_SECONDS = 5.0
+ENUMERATION_TIMEOUT_SECONDS = 120.0
+PROCESS_TERMINATION_GRACE_SECONDS = 2.0
+READ_CHUNK_BYTES = 64 * 1024
+
+
+class BoundedProcessError(RuntimeError):
+    """A child process exceeded an explicit time or output boundary."""
+
+
+def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+
+
+def run_bounded(
+    command: Sequence[str],
+    *,
+    stdout_limit: int,
+    stderr_limit: int,
+    timeout_seconds: float,
+) -> tuple[int, bytes, bytes]:
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert process.stdout is not None and process.stderr is not None
+    events: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=32)
+
+    def pump(name: str, stream: Any) -> None:
+        try:
+            while chunk := stream.read(READ_CHUNK_BYTES):
+                events.put((name, chunk))
+        finally:
+            stream.close()
+            events.put((name, None))
+
+    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+        threading.Thread(target=pump, args=(name, stream), daemon=True).start()
+
+    stdout = bytearray()
+    stderr_tail = bytearray()
+    open_streams = {"stdout", "stderr"}
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while open_streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BoundedProcessError(
+                    f"process exceeded the {timeout_seconds:g}-second timeout"
+                )
+            try:
+                name, chunk = events.get(timeout=min(remaining, 0.25))
+            except queue.Empty:
+                continue
+            if chunk is None:
+                open_streams.discard(name)
+                continue
+            if name == "stdout":
+                if len(stdout) + len(chunk) > stdout_limit:
+                    raise BoundedProcessError(
+                        f"process stdout exceeded {stdout_limit} bytes"
+                    )
+                stdout.extend(chunk)
+            else:
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > stderr_limit:
+                    del stderr_tail[:-stderr_limit]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise BoundedProcessError(
+                f"process exceeded the {timeout_seconds:g}-second timeout"
+            )
+        return_code = process.wait(timeout=remaining)
+    except (BoundedProcessError, subprocess.TimeoutExpired):
+        stop_process(process)
+        raise BoundedProcessError(
+            f"process exceeded the {timeout_seconds:g}-second timeout or output limit"
+        ) from None
+    return return_code, bytes(stdout), bytes(stderr_tail)
 
 
 def gallery_dl_status() -> dict:
     executable = shutil.which("gallery-dl")
     version = None
     if executable:
-        completed = subprocess.run(
-            [executable, "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode == 0:
-            version = completed.stdout.strip() or completed.stderr.strip() or None
+        try:
+            return_code, stdout, stderr = run_bounded(
+                [executable, "--version"],
+                stdout_limit=1_024,
+                stderr_limit=1_024,
+                timeout_seconds=VERSION_TIMEOUT_SECONDS,
+            )
+        except (OSError, BoundedProcessError):
+            return_code, stdout, stderr = 1, b"", b""
+        if return_code == 0:
+            version = stdout.decode("utf-8", errors="replace").strip() or stderr.decode(
+                "utf-8", errors="replace"
+            ).strip() or None
 
     options: list[dict] = []
 
@@ -49,24 +141,24 @@ def gallery_dl_status() -> dict:
         })
 
     if shutil.which("pipx"):
-        offer("pipx", ["pipx", "install", "gallery-dl"], "Installs gallery-dl in an isolated tool environment.")
+        offer("pipx", ["pipx", "install", "--force", f"gallery-dl=={GALLERY_DL_VERSION}"], "Installs the reviewed gallery-dl release in an isolated tool environment.")
     if shutil.which("uv"):
-        offer("uv tool", ["uv", "tool", "install", "gallery-dl"], "Installs gallery-dl as an isolated uv-managed tool.")
-    if platform.system() == "Darwin" and shutil.which("brew"):
-        offer("Homebrew", ["brew", "install", "gallery-dl"], "Uses the available Homebrew package manager.")
+        offer("uv tool", ["uv", "tool", "install", "--force", f"gallery-dl=={GALLERY_DL_VERSION}"], "Installs the reviewed gallery-dl release as an isolated uv-managed tool.")
     offer(
         "Python user install",
-        [sys.executable, "-m", "pip", "install", "--user", "--upgrade", "gallery-dl"],
-        "Portable fallback; may be unavailable in externally managed Python environments.",
+        [sys.executable, "-m", "pip", "install", "--user", "--upgrade", f"gallery-dl=={GALLERY_DL_VERSION}"],
+        "Pinned fallback; may be unavailable in externally managed Python environments.",
     )
     for index, option in enumerate(options):
         option["recommended"] = index == 0
     return {
         "name": "gallery-dl",
         "installed": bool(executable),
+        "ready": bool(executable and version == GALLERY_DL_VERSION),
         "executable": executable,
         "version": version,
-        "install_options": [] if executable else options,
+        "reviewed_version": GALLERY_DL_VERSION,
+        "install_options": [] if executable and version == GALLERY_DL_VERSION else options,
     }
 
 
@@ -187,7 +279,7 @@ def gallery_command(args: argparse.Namespace) -> list[str]:
     # bypass this wrapper's invocation-local consent boundary.
     command = ["gallery-dl", "--config-ignore", "--simulate", "--dump-json", "--no-input", "-o", "extractor.instagram.include=reels"]
     if args.limit:
-        command.extend(["--post-range", f"1-{max(args.limit * 3, args.limit)}"])
+        command.extend(["--post-range", f"1-{args.limit * OVERSAMPLING_FACTOR}"])
     if args.after:
         command.extend(["--date-after", args.after])
     if args.before:
@@ -217,50 +309,40 @@ def enumerate_raw(args: argparse.Namespace) -> tuple[Any, list[str]]:
     if not shutil.which("gallery-dl"):
         raise RuntimeError("gallery-dl is not installed; install it or use --enumeration-file for saved metadata")
     command = gallery_command(args)
-    raw: list[Any] = []
-    max_records = max(args.limit * 3, args.limit)
-    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_output:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=error_output,
-            text=True,
-        )
-        assert process.stdout is not None
-        try:
-            for line_number, line in enumerate(process.stdout, 1):
-                if not line.strip():
-                    continue
-                try:
-                    raw.append(json.loads(line))
-                except json.JSONDecodeError as exc:
-                    if process.poll() is None:
-                        process.terminate()
-                    raise ValueError(
-                        f"invalid gallery-dl JSON on output line {line_number}"
-                    ) from exc
-                if len(raw) >= max_records:
-                    if process.poll() is None:
-                        process.terminate()
-                    break
-        finally:
-            process.stdout.close()
-        return_code = process.wait()
-        stopped_at_bound = len(raw) >= max_records
-        if return_code != 0 and not stopped_at_bound:
-            error_output.seek(0, 2)
-            length = error_output.tell()
-            error_output.seek(max(0, length - MAX_ERROR_CHARACTERS))
-            detail = error_output.read().strip().splitlines()
-            last_line = detail[-1] if detail else "unknown gallery-dl error"
-            if args.cookies:
-                last_line = last_line.replace(str(args.cookies), "<redacted-cookie-file>")
-            if args.cookies_from_browser:
-                last_line = last_line.replace(
-                    args.cookies_from_browser,
-                    "<consented-browser-profile>",
-                )
-            raise RuntimeError(f"gallery-dl enumeration failed: {last_line}")
+    return_code, stdout, stderr = run_bounded(
+        command,
+        stdout_limit=MAX_LIVE_ENUMERATION_BYTES,
+        stderr_limit=MAX_ERROR_CHARACTERS,
+        timeout_seconds=ENUMERATION_TIMEOUT_SECONDS,
+    )
+    if return_code != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
+        last_line = detail[-1] if detail else "unknown gallery-dl error"
+        if args.cookies:
+            last_line = last_line.replace(str(args.cookies), "<redacted-cookie-file>")
+        if args.cookies_from_browser:
+            last_line = last_line.replace(
+                args.cookies_from_browser,
+                "<consented-browser-profile>",
+            )
+        raise RuntimeError(f"gallery-dl enumeration failed: {last_line}")
+    try:
+        text = stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("gallery-dl output is not valid UTF-8") from exc
+    try:
+        raw: Any = json.loads(text)
+    except json.JSONDecodeError:
+        raw = []
+        for line_number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                raw.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid gallery-dl JSON on output line {line_number}"
+                ) from exc
     return raw, safe_command(command)
 
 
@@ -273,7 +355,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--after", type=parse_date, help="Only posts after this ISO date")
     parser.add_argument("--before", type=parse_date, help="Only posts before this ISO date")
     parser.add_argument("--new-only", action="store_true", help="Exclude sources already marked processed")
-    parser.add_argument("--dry-run", action="store_true", help="Enumerate and print a plan; never mutate state or download media")
     auth = parser.add_mutually_exclusive_group()
     auth.add_argument("--cookies", type=Path, help="User-supplied Netscape cookie file")
     auth.add_argument("--cookies-from-browser", help="gallery-dl browser specification")
@@ -306,15 +387,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({
             "schema_version": 1,
             "dependencies": {"gallery-dl": dependency},
-            "next_step": "Proceed when installed; otherwise ask the user to approve one offered install command.",
+            "next_step": "Proceed when ready is true; otherwise ask the user to approve one offered pinned install command.",
         }, indent=2, sort_keys=True))
         return 0
-    if not args.enumeration_file and not dependency["installed"]:
+    if not args.enumeration_file and not dependency["ready"]:
+        error_code = (
+            "DEPENDENCY_VERSION_MISMATCH"
+            if dependency["installed"]
+            else "DEPENDENCY_MISSING"
+        )
         print(json.dumps({
             "schema_version": 1,
             "error": {
-                "code": "DEPENDENCY_MISSING",
-                "message": "gallery-dl is required for live Instagram profile enumeration.",
+                "code": error_code,
+                "message": (
+                    f"gallery-dl {GALLERY_DL_VERSION} is required for live Instagram profile enumeration."
+                ),
             },
             "dependency": dependency,
             "next_step": "Ask the user to approve one offered install command; do not install automatically.",
@@ -343,7 +431,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     result = {
         "schema_version": 1,
-        "dry_run": args.dry_run,
         "profile_url": args.profile_url,
         "enumeration_command": command,
         "browser_cookie_consent": bool(args.cookies_from_browser and args.consent_browser_cookies),

@@ -1,5 +1,5 @@
 -- Phase 1: deploy request-context propagation before enabling RLS. These
--- policies are dormant until 202608280002_enable_projects_rls.sql runs.
+-- policies are dormant until the separately released phase-2 RLS file runs.
 
 create policy "workspace members read projects"
 on public.projects for select

@@ -1,6 +1,6 @@
 # Mixed SaaS fixture
 
-This is a non-production negative audit fixture. It is never started, built, or deployed; its incomplete handlers intentionally exercise missing authentication, tenant authorization, webhook verification, and test evidence. `container-negative-fixture.json` records unsafe container claims as data rather than exposing a runnable Dockerfile.
+This is a non-production negative audit fixture. It is never started, built, or deployed; its package has no start script, its Express app neither listens nor exports, and root contract tests enforce those boundaries. Its incomplete handlers intentionally exercise missing authentication, tenant authorization, webhook verification, and test evidence. `container-negative-fixture.json` records unsafe container claims as data rather than exposing a runnable Dockerfile.
 
 Dependency versions and the lockfile remain real and reviewable even though application behavior is intentionally incomplete.
 

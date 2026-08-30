@@ -15,6 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR = ROOT / "skills/project-practices-curator/scripts/collect_instagram.py"
 STATE = ROOT / "skills/project-practices-curator/scripts/curation_state.py"
 
+COLLECTOR_SPEC = importlib.util.spec_from_file_location(
+    "project_practices_collect_instagram", COLLECTOR
+)
+assert COLLECTOR_SPEC and COLLECTOR_SPEC.loader
+COLLECTOR_MODULE = importlib.util.module_from_spec(COLLECTOR_SPEC)
+COLLECTOR_SPEC.loader.exec_module(COLLECTOR_MODULE)
+
 STATE_SPEC = importlib.util.spec_from_file_location("project_practices_curation_state", STATE)
 assert STATE_SPEC and STATE_SPEC.loader
 STATE_MODULE = importlib.util.module_from_spec(STATE_SPEC)
@@ -32,7 +39,7 @@ import sys
 from pathlib import Path
 
 if "--version" in sys.argv:
-    print("9.9.9-fixture")
+    print("1.32.9")
     raise SystemExit(0)
 
 Path(os.environ["FAKE_GALLERY_ARGS"]).write_text(json.dumps(sys.argv[1:]))
@@ -76,13 +83,16 @@ else:
         self.assertTrue(dependency["install_options"])
         self.assertEqual(sum(bool(option["recommended"]) for option in dependency["install_options"]), 1)
         self.assertTrue(all(option["requires_explicit_approval"] for option in dependency["install_options"]))
+        self.assertTrue(
+            all("gallery-dl==1.32.9" in option["command"] for option in dependency["install_options"])
+        )
         self.assertIn("ask the user", result["next_step"].lower())
 
     def test_live_collection_missing_dependency_fails_closed_with_exit_three(self):
         env = os.environ.copy()
         env["PATH"] = "/definitely-missing"
         completed = subprocess.run(
-            [sys.executable, str(COLLECTOR), "https://www.instagram.com/example/", "--dry-run"],
+            [sys.executable, str(COLLECTOR), "https://www.instagram.com/example/"],
             capture_output=True,
             text=True,
             env=env,
@@ -96,7 +106,7 @@ else:
     def test_dependency_preflight_reports_installed_version(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "gallery-dl"
-            executable.write_text("#!/bin/sh\necho 9.9.9-fixture\n")
+            executable.write_text("#!/bin/sh\necho 1.32.9\n")
             executable.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = directory
@@ -109,8 +119,28 @@ else:
             )
         dependency = json.loads(completed.stdout)["dependencies"]["gallery-dl"]
         self.assertTrue(dependency["installed"])
-        self.assertEqual(dependency["version"], "9.9.9-fixture")
+        self.assertEqual(dependency["version"], "1.32.9")
+        self.assertTrue(dependency["ready"])
         self.assertEqual(dependency["install_options"], [])
+
+    def test_live_collection_rejects_unreviewed_installed_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "gallery-dl"
+            executable.write_text("#!/bin/sh\necho 9.9.9-unreviewed\n")
+            executable.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = directory
+            completed = subprocess.run(
+                [sys.executable, str(COLLECTOR), "https://www.instagram.com/example/"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(completed.returncode, 3)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["error"]["code"], "DEPENDENCY_VERSION_MISMATCH")
+        self.assertFalse(result["dependency"]["ready"])
+        self.assertTrue(result["dependency"]["install_options"])
 
     def test_new_only_limit_and_dates_use_stable_ids(self):
         completed = subprocess.run(
@@ -118,14 +148,13 @@ else:
                 sys.executable, str(COLLECTOR), "https://www.instagram.com/practice_creator/",
                 "--enumeration-file", str(ROOT / "fixtures/instagram/enumeration.json"),
                 "--state", str(ROOT / "fixtures/instagram/state.json"),
-                "--new-only", "--after", "2026-01-01", "--limit", "1", "--dry-run",
+                "--new-only", "--after", "2026-01-01", "--limit", "1",
             ],
             check=True,
             capture_output=True,
             text=True,
         )
         result = json.loads(completed.stdout)
-        self.assertTrue(result["dry_run"])
         self.assertEqual(result["selected_count"], 1)
         self.assertEqual(result["selected"][0]["source_id"], "instagram:NEWEST01")
         self.assertFalse(result["browser_cookie_consent"])
@@ -133,7 +162,7 @@ else:
 
     def test_browser_cookie_access_requires_explicit_same_invocation_consent(self):
         completed = subprocess.run(
-            [sys.executable, str(COLLECTOR), "https://www.instagram.com/example/", "--cookies-from-browser", "firefox", "--dry-run"],
+            [sys.executable, str(COLLECTOR), "https://www.instagram.com/example/", "--cookies-from-browser", "firefox"],
             capture_output=True,
             text=True,
         )
@@ -145,7 +174,7 @@ else:
             [
                 sys.executable, str(COLLECTOR), "https://www.instagram.com/example/",
                 "--enumeration-file", str(ROOT / "fixtures/instagram/enumeration.json"),
-                "--cookies", "/sensitive/session/cookies.txt", "--dry-run",
+                "--cookies", "/sensitive/session/cookies.txt",
             ],
             check=True,
             capture_output=True,
@@ -166,7 +195,6 @@ else:
                         "https://www.instagram.com/example/",
                         "--limit",
                         "2",
-                        "--dry-run",
                     ],
                     check=True,
                     capture_output=True,
@@ -190,7 +218,6 @@ else:
                     "--consent-browser-cookies",
                     "--limit",
                     "1",
-                    "--dry-run",
                 ],
                 check=True,
                 capture_output=True,
@@ -214,7 +241,6 @@ else:
                     "https://www.instagram.com/example/",
                     "--cookies",
                     "/sensitive/session/cookies.txt",
-                    "--dry-run",
                 ],
                 capture_output=True,
                 text=True,
@@ -232,7 +258,6 @@ else:
                 "https://www.instagram.com/example/",
                 "--limit",
                 "501",
-                "--dry-run",
             ],
             capture_output=True,
             text=True,
@@ -250,13 +275,37 @@ else:
                     "https://www.instagram.com/example/",
                     "--enumeration-file",
                     str(oversized),
-                    "--dry-run",
                 ],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(completed.returncode, 2)
             self.assertIn("split it into a smaller JSON/JSON-lines batch", completed.stderr)
+
+    def test_bounded_process_rejects_excess_output_and_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            noisy = Path(directory) / "noisy.py"
+            noisy.write_text("import sys\nsys.stdout.write('x' * 4096)\n")
+            with self.assertRaises(COLLECTOR_MODULE.BoundedProcessError):
+                COLLECTOR_MODULE.run_bounded(
+                    [sys.executable, str(noisy)],
+                    stdout_limit=32,
+                    stderr_limit=32,
+                    timeout_seconds=1,
+                )
+
+            stalled = Path(directory) / "stalled.py"
+            stalled.write_text("import time\ntime.sleep(10)\n")
+            with mock.patch.object(
+                COLLECTOR_MODULE, "PROCESS_TERMINATION_GRACE_SECONDS", 0.1
+            ):
+                with self.assertRaises(COLLECTOR_MODULE.BoundedProcessError):
+                    COLLECTOR_MODULE.run_bounded(
+                        [sys.executable, str(stalled)],
+                        stdout_limit=32,
+                        stderr_limit=32,
+                        timeout_seconds=0.1,
+                    )
 
 
 class CurationStateTests(unittest.TestCase):
@@ -270,6 +319,36 @@ class CurationStateTests(unittest.TestCase):
 
     def run_state(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, str(STATE), *args], check=check, capture_output=True, text=True)
+
+    def proposal_arguments(self) -> list[str]:
+        return [
+            "propose",
+            str(self.catalog),
+            "--practice-id",
+            "practice.example.model-output",
+            "--domain",
+            "coding-ai",
+            "--title",
+            "Bounded model output",
+            "--statement",
+            "A reviewable candidate statement.",
+            "--classification",
+            "new",
+            "--applicability",
+            "Code projects",
+            "--signal",
+            "project.yml",
+            "--source-id",
+            "instagram:MODEL01",
+            "--reason",
+            "Extracted with timestamped evidence.",
+        ]
+
+    @staticmethod
+    def replace_argument(arguments: list[str], flag: str, value: str) -> list[str]:
+        updated = list(arguments)
+        updated[updated.index(flag) + 1] = value
+        return updated
 
     def test_catalog_validates(self):
         completed = self.run_state("validate", str(self.catalog))
@@ -379,6 +458,54 @@ class CurationStateTests(unittest.TestCase):
 
         self.assertEqual(json.loads(state.read_text()), original)
         self.assertEqual(list(state.parent.glob(f".{state.name}.*")), [])
+
+    def test_adversarial_model_output_is_rejected_without_catalog_changes(self):
+        corpus = json.loads(
+            (ROOT / "fixtures/curator/model-output-cases.json").read_text()
+        )
+        self.assertEqual(corpus["prompt_version"], "curator-claim-extraction-v1")
+        original = self.catalog.read_bytes()
+        for case in corpus["cases"]:
+            with self.subTest(case=case["id"]):
+                value = case.get("value")
+                if value is None:
+                    repeat = case["repeat"]
+                    value = repeat["character"] * repeat["count"]
+                arguments = self.replace_argument(
+                    self.proposal_arguments(), f"--{case['field']}", value
+                )
+                completed = self.run_state(*arguments, check=False)
+                self.assertEqual(case["expected"], "reject")
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("proposal rejected", completed.stderr)
+                self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_reference_urls_fail_closed_on_credentials_and_local_targets(self):
+        original = self.catalog.read_bytes()
+        for url in (
+            "https://user:password@example.com/reference",
+            "https://127.0.0.1/reference",
+            "https://localhost/reference",
+        ):
+            with self.subTest(url=url):
+                completed = self.run_state(
+                    *self.proposal_arguments(),
+                    "--authoritative-ref",
+                    f"Primary|{url}|Supports the candidate.",
+                    check=False,
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_aggregate_model_output_limit_leaves_catalog_unchanged(self):
+        original = self.catalog.read_bytes()
+        arguments = self.proposal_arguments()
+        for index in range(61):
+            arguments.extend(["--signal", f"signal-{index}-" + "x" * 188])
+        completed = self.run_state(*arguments, check=False)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("aggregate limit", completed.stderr)
+        self.assertEqual(self.catalog.read_bytes(), original)
 
     def test_new_video_claim_can_only_enter_as_candidate_or_advisory(self):
         completed = self.run_state(

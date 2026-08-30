@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlsplit
 
 
 PRACTICE_ID = re.compile(r"^practice\.[a-z0-9.-]+$")
@@ -22,6 +24,29 @@ CONSEQUENTIAL_DOMAINS = frozenset({
     "data-reliability",
     "infrastructure-deployment",
 })
+TEXT_LIMITS = {
+    "domain": 100,
+    "title": 200,
+    "statement": 2_000,
+    "applicability": 1_000,
+    "signal": 200,
+    "source_id": 200,
+    "reference_title": 300,
+    "reference_supports": 1_000,
+    "reference_url": 2_048,
+    "reason": 2_000,
+    "test_evidence": 500,
+}
+MAX_PROPOSAL_TEXT_CHARACTERS = 12_000
+MAX_PRACTICE_TEXT_CHARACTERS = 50_000
+CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f]")
+PROHIBITED_TEXT = (
+    (re.compile(r"<\s*/?\s*(?:script|iframe|object|embed|svg|style|link|meta)\b", re.I), "executable markup"),
+    (re.compile(r"\b(?:javascript|vbscript|data\s*:\s*text/html)\s*:", re.I), "an unsafe URL scheme"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private-key material"),
+    (re.compile(r"\b(?:api[_ -]?key|password|secret|access[_ -]?token)\s*[:=]\s*\S+", re.I), "credential-like material"),
+    (re.compile(r"\b(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+instructions?\b", re.I), "instruction-like prompt injection"),
+)
 
 
 def today() -> str:
@@ -61,11 +86,102 @@ def atomic_write(path: Path, data: dict) -> None:
         raise
 
 
+def validate_text(label: str, value: object, limit: int, *, allow_empty: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return f"{label} must be a string"
+    if not allow_empty and not value.strip():
+        return f"{label} must not be empty"
+    if len(value) > limit:
+        return f"{label} exceeds {limit} characters"
+    if CONTROL_CHARACTER_RE.search(value):
+        return f"{label} contains a control character"
+    for pattern, description in PROHIBITED_TEXT:
+        if pattern.search(value):
+            return f"{label} contains {description}"
+    return None
+
+
+def validate_https_url(label: str, value: object) -> str | None:
+    error = validate_text(label, value, TEXT_LIMITS["reference_url"])
+    if error:
+        return error
+    assert isinstance(value, str)
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return f"{label} must be an HTTPS URL with a hostname"
+    if parsed.username or parsed.password:
+        return f"{label} must not contain URL credentials"
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        return f"{label} must not target a local hostname"
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+    if not address.is_global:
+        return f"{label} must not target a non-public IP address"
+    return None
+
+
 def parse_reference(value: str) -> dict:
     parts = value.split("|", 2)
-    if len(parts) != 3 or not parts[1].startswith("https://"):
+    if len(parts) != 3:
         raise argparse.ArgumentTypeError("reference must be TITLE|https://URL|SUPPORTED PROPOSITION")
+    for label, text, limit in (
+        ("reference title", parts[0], TEXT_LIMITS["reference_title"]),
+        ("reference proposition", parts[2], TEXT_LIMITS["reference_supports"]),
+    ):
+        if error := validate_text(label, text, limit):
+            raise argparse.ArgumentTypeError(error)
+    if error := validate_https_url("reference URL", parts[1]):
+        raise argparse.ArgumentTypeError(error)
     return {"title": parts[0], "url": parts[1], "supports": parts[2]}
+
+
+def proposal_input_errors(args: argparse.Namespace) -> list[str]:
+    errors: list[str] = []
+    fields = (
+        ("domain", args.domain, TEXT_LIMITS["domain"]),
+        ("title", args.title, TEXT_LIMITS["title"]),
+        ("statement", args.statement, TEXT_LIMITS["statement"]),
+        ("applicability", args.applicability, TEXT_LIMITS["applicability"]),
+        ("reason", args.reason, TEXT_LIMITS["reason"]),
+        *(("signal", value, TEXT_LIMITS["signal"]) for value in args.signal),
+        *(("source ID", value, TEXT_LIMITS["source_id"]) for value in args.source_id),
+    )
+    total = 0
+    for label, value, limit in fields:
+        total += len(value) if isinstance(value, str) else 0
+        if error := validate_text(label, value, limit):
+            errors.append(error)
+    for reference in args.authoritative_ref:
+        for label, key, limit in (
+            ("reference title", "title", TEXT_LIMITS["reference_title"]),
+            ("reference proposition", "supports", TEXT_LIMITS["reference_supports"]),
+        ):
+            value = reference.get(key)
+            total += len(value) if isinstance(value, str) else 0
+            if error := validate_text(label, value, limit):
+                errors.append(error)
+        url = reference.get("url")
+        total += len(url) if isinstance(url, str) else 0
+        if error := validate_https_url("reference URL", url):
+            errors.append(error)
+    if total > MAX_PROPOSAL_TEXT_CHARACTERS:
+        errors.append(
+            f"proposal text exceeds the aggregate limit of {MAX_PROPOSAL_TEXT_CHARACTERS} characters"
+        )
+    return errors
+
+
+def total_text_characters(value: object) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(total_text_characters(item) for item in value)
+    if isinstance(value, dict):
+        return sum(total_text_characters(item) for item in value.values())
+    return 0
 
 
 def validate_catalog(data: dict) -> list[str]:
@@ -92,15 +208,97 @@ def validate_catalog(data: dict) -> list[str]:
             errors.append(f"duplicate practice id: {pid}")
         else:
             seen.add(pid)
+        if total_text_characters(practice) > MAX_PRACTICE_TEXT_CHARACTERS:
+            errors.append(
+                f"{label} exceeds the aggregate limit of {MAX_PRACTICE_TEXT_CHARACTERS} text characters"
+            )
         if practice.get("enforcement_state") not in {"candidate", "advisory", "enforceable"}:
             errors.append(f"{label}.enforcement_state is invalid")
         if practice.get("confidence") not in {"HIGH", "MEDIUM", "LOW"}:
             errors.append(f"{label}.confidence is invalid")
-        if not isinstance(practice.get("revisions"), list) or not practice.get("revisions"):
+        for key, limit in (
+            ("domain", TEXT_LIMITS["domain"]),
+            ("title", TEXT_LIMITS["title"]),
+            ("statement", TEXT_LIMITS["statement"]),
+        ):
+            if error := validate_text(f"{label}.{key}", practice.get(key), limit):
+                errors.append(error)
+        applicability = practice.get("applicability")
+        if not isinstance(applicability, dict):
+            errors.append(f"{label}.applicability must be an object")
+        else:
+            if error := validate_text(
+                f"{label}.applicability.description",
+                applicability.get("description"),
+                TEXT_LIMITS["applicability"],
+            ):
+                errors.append(error)
+            signals = applicability.get("signals")
+            if not isinstance(signals, list):
+                errors.append(f"{label}.applicability.signals must be an array")
+            else:
+                for signal_index, signal in enumerate(signals):
+                    if error := validate_text(
+                        f"{label}.applicability.signals[{signal_index}]",
+                        signal,
+                        TEXT_LIMITS["signal"],
+                    ):
+                        errors.append(error)
+        source_ids = practice.get("source_video_ids")
+        if not isinstance(source_ids, list):
+            errors.append(f"{label}.source_video_ids must be an array")
+        else:
+            for source_index, source_id in enumerate(source_ids):
+                if error := validate_text(
+                    f"{label}.source_video_ids[{source_index}]",
+                    source_id,
+                    TEXT_LIMITS["source_id"],
+                ):
+                    errors.append(error)
+        revisions = practice.get("revisions")
+        if not isinstance(revisions, list) or not revisions:
             errors.append(f"{label}.revisions must be a non-empty array")
+        else:
+            for revision_index, item in enumerate(revisions):
+                revision_label = f"{label}.revisions[{revision_index}]"
+                if not isinstance(item, dict):
+                    errors.append(f"{revision_label} must be an object")
+                    continue
+                if error := validate_text(
+                    f"{revision_label}.reason",
+                    item.get("reason"),
+                    TEXT_LIMITS["reason"],
+                ):
+                    errors.append(error)
+                authoritative_urls = item.get("authoritative_urls")
+                if not isinstance(authoritative_urls, list):
+                    errors.append(f"{revision_label}.authoritative_urls must be an array")
+                else:
+                    for url_index, url in enumerate(authoritative_urls):
+                        if error := validate_https_url(
+                            f"{revision_label}.authoritative_urls[{url_index}]", url
+                        ):
+                            errors.append(error)
         refs = practice.get("authoritative_references", [])
-        if not isinstance(refs, list) or any(not isinstance(ref, dict) or not str(ref.get("url", "")).startswith("https://") for ref in refs):
+        if not isinstance(refs, list) or any(not isinstance(ref, dict) for ref in refs):
             errors.append(f"{label}.authoritative_references is invalid")
+            refs = []
+        for reference_index, reference in enumerate(refs):
+            for key, limit in (
+                ("title", TEXT_LIMITS["reference_title"]),
+                ("supports", TEXT_LIMITS["reference_supports"]),
+            ):
+                if error := validate_text(
+                    f"{label}.authoritative_references[{reference_index}].{key}",
+                    reference.get(key),
+                    limit,
+                ):
+                    errors.append(error)
+            if error := validate_https_url(
+                f"{label}.authoritative_references[{reference_index}].url",
+                reference.get("url"),
+            ):
+                errors.append(error)
         if practice.get("enforcement_state") == "enforceable" and practice.get("domain") in CONSEQUENTIAL_DOMAINS:
             if not refs or not practice.get("verification_date"):
                 errors.append(f"{label} is consequential/enforceable but lacks current authoritative verification")
@@ -168,6 +366,9 @@ def revision(classification: str, reason: str, source_ids: list[str], references
 
 
 def command_propose(args: argparse.Namespace) -> int:
+    input_errors = proposal_input_errors(args)
+    if input_errors:
+        raise ValueError("proposal rejected: " + "; ".join(input_errors))
     catalog = read_json(args.catalog)
     errors = validate_catalog(catalog)
     if errors:
@@ -207,12 +408,26 @@ def command_propose(args: argparse.Namespace) -> int:
         practices.sort(key=lambda item: item["id"])
         action = "created candidate/advisory"
     catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after proposed update: " + "; ".join(errors))
     atomic_write(args.catalog, catalog)
     print(f"{action}: {args.practice_id}")
     return 0
 
 
 def command_promote(args: argparse.Namespace) -> int:
+    promotion_fields = [
+        ("reason", args.reason, TEXT_LIMITS["reason"]),
+        *(("test evidence", item, TEXT_LIMITS["test_evidence"]) for item in args.test_evidence),
+    ]
+    promotion_errors = [
+        error
+        for label, value, limit in promotion_fields
+        if (error := validate_text(label, value, limit))
+    ]
+    if promotion_errors:
+        raise ValueError("promotion rejected: " + "; ".join(promotion_errors))
     catalog = read_json(args.catalog)
     errors = validate_catalog(catalog)
     if errors:
@@ -238,6 +453,9 @@ def command_promote(args: argparse.Namespace) -> int:
         "authoritative_urls": sorted({ref["url"] for ref in practice["authoritative_references"]}),
     })
     catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after promotion: " + "; ".join(errors))
     atomic_write(args.catalog, catalog)
     print(f"promoted after separate review: {args.practice_id}")
     return 0

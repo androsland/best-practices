@@ -36,6 +36,16 @@ def findings_by_id(report: dict) -> dict:
     return {item["check_id"]: item for item in report["findings"]}
 
 
+def audit_path(root: Path, *extra: str) -> dict:
+    completed = subprocess.run(
+        [sys.executable, str(AUDIT), str(root), "--format", "json", *extra],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
 class AuditBehaviorTests(unittest.TestCase):
     def test_secure_saas_has_observable_passes(self):
         report = audit("secure-saas")
@@ -137,6 +147,39 @@ class AuditBehaviorTests(unittest.TestCase):
             self.assertEqual(report["evidence_budget"]["max_total_text_bytes"], 10)
             self.assertEqual(report["evidence_budget"]["skipped_text_path_count"], 2)
             self.assertTrue(any("2 candidate file(s) were skipped" in item for item in report["limitations"]))
+
+    def test_inventory_stops_at_file_and_candidate_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("a.py", "b.py", "c.py", "d.bin"):
+                (root / name).write_text("value = 1\n")
+
+            file_limited = audit_path(root, "--max-inventory-files", "2")
+            self.assertTrue(file_limited["evidence_budget"]["inventory_truncated"])
+            self.assertEqual(file_limited["evidence_budget"]["inventoried_file_count"], 2)
+
+            candidate_limited = audit_path(root, "--max-text-candidates", "2")
+            self.assertTrue(candidate_limited["evidence_budget"]["inventory_truncated"])
+            self.assertEqual(candidate_limited["evidence_budget"]["text_candidate_count"], 2)
+
+    def test_secret_enforcement_reports_only_paths_and_honors_exclusions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = "-----BEGIN PRIVATE KEY-----"
+            (root / "credential.py").write_text(f'MATERIAL = "{secret}"\n')
+            report = audit_path(root)
+            finding = findings_by_id(report)["SEC-SECRETS-001"]
+            self.assertEqual(finding["status"], "MISSING")
+            self.assertEqual(finding["evidence_paths"], ["credential.py:1"])
+            self.assertNotIn(secret, json.dumps(finding))
+
+            (root / "credential.py").unlink()
+            (root / ".env.example").write_text(f'MATERIAL="{secret}"\n')
+            fixture = root / "fixtures"
+            fixture.mkdir()
+            (fixture / "credential.py").write_text(f'MATERIAL = "{secret}"\n')
+            excluded = findings_by_id(audit_path(root))["SEC-SECRETS-001"]
+            self.assertEqual(excluded["status"], "PASS")
 
 
 if __name__ == "__main__":

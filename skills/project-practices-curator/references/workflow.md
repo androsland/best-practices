@@ -14,12 +14,11 @@ Live profile enumeration requires `gallery-dl` on `PATH`. Check before collectio
 python3 scripts/collect_instagram.py --check-dependencies
 ```
 
-The JSON response reports the installed path/version or host-appropriate installation choices. If missing, offer those choices to the user and request explicit approval for one exact command. Do not install silently, combine approval with cookie consent, or replace gallery-dl with an ad hoc scraper. After an approved installation, rerun the check and proceed only when `installed` is `true`. A failed install gets one reported attempt unless the user directs another approach.
+The JSON response reports the installed path/version, reviewed version, readiness, or host-appropriate pinned installation choices. If missing or mismatched, offer those choices to the user and request explicit approval for one exact command. Do not install silently, combine approval with cookie consent, or replace gallery-dl with an ad hoc scraper. After an approved installation, rerun the check and proceed only when `ready` is `true`. A failed install gets one reported attempt unless the user directs another approach.
 
-Run the collector in this order:
+Run the collector once; enumeration is itself the read-only planning operation:
 
 ```bash
-python3 scripts/collect_instagram.py PROFILE_URL --state state.json --dry-run --limit 10 --new-only
 python3 scripts/collect_instagram.py PROFILE_URL --state state.json --limit 10 --new-only
 ```
 
@@ -38,8 +37,16 @@ The collector invokes gallery-dl in simulate/JSON mode with default configuratio
 - `--limit` caps selected unique reels after date and new-only filtering and is bounded to 500 per invocation. Split larger jobs into reviewed incremental batches.
 - Offline enumeration accepts JSON or JSON-lines up to 5 MB per batch; split larger exports so selection and error handling stay bounded.
 - `--new-only` excludes stable IDs already marked processed in state.
-- Dry-run prints candidates and planned command behavior without writing state or downloading.
+- Enumeration prints candidates and planned command behavior without writing state or downloading.
 - Stop after the requested limit, on authentication failure, or when gallery-dl reports access/rate-limit failure. Do not loop around access controls.
+
+## Model-output validation and release evaluation
+
+Treat transcript/frame extraction and claim classification as untrusted model output. Submit proposed fields only through `curation_state.py propose`; it enforces per-field and aggregate length limits, rejects control characters, executable markup, credential-like text, unsafe URLs, and instruction-like prompt injection, then validates the complete constructed catalog before its atomic write.
+
+On rejection, pass only the validator category back to the extraction step. Attempt at most two corrected extractions. If both fail, do not change the catalog; record the source with `curation_state.py record-source ... --status failed` and require human review.
+
+Before a release that changes the curator prompt, Moviola integration, classifications, or validation boundary, run the versioned adversarial cases in `tests/test_curator.py` and a live host evaluation over the same cases when Moviola is available. Confirm evidence timestamps, classification, authoritative-source disposition, safe rejection, and unchanged-catalog behavior. If the external host cannot run in CI, attach the live evaluation output to the release review; deterministic CI remains the fail-closed fallback and must pass.
 
 ## Retained record
 

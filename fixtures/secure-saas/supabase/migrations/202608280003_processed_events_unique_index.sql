@@ -15,5 +15,8 @@ begin
 end
 $$;
 
-create unique index concurrently if not exists processed_events_event_id_key
+-- Do not use IF NOT EXISTS here. A failed concurrent build can leave an
+-- identically named INVALID index, and a retry must fail until an operator
+-- inspects and drops that invalid artifact.
+create unique index concurrently processed_events_event_id_key
 on public.processed_events(event_id);

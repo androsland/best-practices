@@ -8,20 +8,17 @@
     {
       "id": "retry-resolved",
       "input": "The customer retried the upload and the second attempt completed.",
-      "expected_concepts": ["customer", "retry", "completed"],
-      "recorded_summary": "The customer completed the upload after a retry."
+      "expected_concepts": ["customer", "retry", "completed"]
     },
     {
       "id": "billing-human-review",
       "input": "A duplicate charge is reported; no refund has been authorized.",
-      "expected_concepts": ["duplicate charge", "refund", "not authorized"],
-      "recorded_summary": "A duplicate charge was reported, and a refund is not authorized; human review is required."
+      "expected_concepts": ["duplicate charge", "refund", "not authorized"]
     },
     {
       "id": "access-pending",
       "input": "Workspace access remains blocked while ownership evidence is reviewed.",
-      "expected_concepts": ["workspace access", "blocked", "ownership review"],
-      "recorded_summary": "Workspace access is blocked pending completion of the ownership review."
+      "expected_concepts": ["workspace access", "blocked", "ownership review"]
     }
   ]
 }

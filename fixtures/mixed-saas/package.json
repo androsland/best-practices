@@ -2,9 +2,6 @@
   "name": "mixed-saas-fixture",
   "private": true,
   "engines": { "node": ">=22" },
-  "scripts": {
-    "start": "node src/server.js"
-  },
   "dependencies": {
     "@supabase/supabase-js": "2.112.4",
     "express": "5.2.1",
