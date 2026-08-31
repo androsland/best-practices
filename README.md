@@ -7,15 +7,14 @@
 
 ## Development
 
-Install the fixture test dependencies once, then run the single deterministic root check:
+Install the Python test dependency once, then run the single deterministic root check:
 
 ```bash
 python3 -m pip install pytest==9.0.3
-npm --prefix fixtures/secure-saas ci
 ./scripts/validate.sh
 ```
 
-The root command runs the repository unittests, minimal-CLI pytest suite, secure-SaaS Vitest and TypeScript checks, an audit smoke test, and catalog validation. The root GitHub workflow runs the same command. The nested secure-SaaS workflow is a pinned standalone-fixture template; the root workflow is what validates it in this repository.
+The root command runs the repository unittests, minimal-CLI pytest suite, virtual-fixture audit smoke test, and catalog validation. SaaS examples are inert `*.fixture` analyzer artifacts: the audit engine maps their logical names only when testing those fixture directories, and this repository never installs or deploys them. The root GitHub workflow runs the same validation command.
 
 External tool and CI provenance is recorded in [docs/supply-chain.md](docs/supply-chain.md).
 

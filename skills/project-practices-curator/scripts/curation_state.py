@@ -355,6 +355,122 @@ def command_source_id(args: argparse.Namespace) -> int:
     return 0
 
 
+def source_catalog_references(catalog: dict, source_id: str) -> list[dict]:
+    references = []
+    for practice in catalog["practices"]:
+        revision_indexes = [
+            index
+            for index, item in enumerate(practice["revisions"])
+            if source_id in item.get("source_video_ids", [])
+        ]
+        if source_id in practice["source_video_ids"] or revision_indexes:
+            references.append({
+                "practice_id": practice["id"],
+                "current_source": source_id in practice["source_video_ids"],
+                "revision_indexes": revision_indexes,
+            })
+    return references
+
+
+def command_export_source(args: argparse.Namespace) -> int:
+    if error := validate_text("source ID", args.source_id, TEXT_LIMITS["source_id"]):
+        raise ValueError(f"source export rejected: {error}")
+    state = read_json(args.state)
+    records = state.get("processed_sources")
+    if not isinstance(records, dict):
+        raise ValueError("state.processed_sources must be an object")
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before source export: " + "; ".join(errors))
+    references = source_catalog_references(catalog, args.source_id)
+    record = records.get(args.source_id)
+    if record is None and not references:
+        raise ValueError(f"unknown source: {args.source_id}")
+    print(json.dumps({
+        "schema_version": 1,
+        "exported_at": today(),
+        "source_id": args.source_id,
+        "state_record": record,
+        "catalog_references": references,
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+def command_delete_source(args: argparse.Namespace) -> int:
+    fields = (
+        ("source ID", args.source_id, TEXT_LIMITS["source_id"]),
+        ("reason", args.reason, TEXT_LIMITS["reason"]),
+    )
+    errors = [
+        error
+        for label, value, limit in fields
+        if (error := validate_text(label, value, limit))
+    ]
+    if errors:
+        raise ValueError("source deletion rejected: " + "; ".join(errors))
+
+    state = read_json(args.state)
+    records = state.get("processed_sources")
+    if not isinstance(records, dict):
+        raise ValueError("state.processed_sources must be an object")
+    state_changed = records.pop(args.source_id, None) is not None
+
+    catalog = read_json(args.catalog)
+    catalog_errors = validate_catalog(catalog)
+    if catalog_errors:
+        raise ValueError(
+            "catalog is invalid before source deletion: " + "; ".join(catalog_errors)
+        )
+    changed_practices = []
+    for practice in catalog["practices"]:
+        changed = args.source_id in practice["source_video_ids"]
+        practice["source_video_ids"] = [
+            value for value in practice["source_video_ids"] if value != args.source_id
+        ]
+        for item in practice["revisions"]:
+            source_ids = item.get("source_video_ids", [])
+            if args.source_id in source_ids:
+                item["source_video_ids"] = [
+                    value for value in source_ids if value != args.source_id
+                ]
+                changed = True
+        if changed:
+            practice["revisions"].append({
+                "date": args.deleted_on,
+                "change": "removed-source-personal-data",
+                "reason": args.reason,
+                "source_video_ids": [],
+                "authoritative_urls": sorted(
+                    reference["url"]
+                    for reference in practice["authoritative_references"]
+                ),
+            })
+            changed_practices.append(practice["id"])
+
+    if not state_changed and not changed_practices:
+        raise ValueError(f"unknown source: {args.source_id}")
+    state["updated_at"] = today()
+    catalog["updated_at"] = today()
+    catalog_errors = validate_catalog(catalog)
+    if catalog_errors:
+        raise ValueError(
+            "catalog is invalid after source deletion: " + "; ".join(catalog_errors)
+        )
+
+    # State-first is retry-safe. If the catalog replace fails, a retry still finds
+    # and removes every catalog reference even though the state record is gone.
+    if state_changed:
+        atomic_write(args.state, state)
+    if changed_practices:
+        atomic_write(args.catalog, catalog)
+    print(
+        f"deleted source personal data: {args.source_id} "
+        f"({len(changed_practices)} practice references updated)"
+    )
+    return 0
+
+
 def revision(classification: str, reason: str, source_ids: list[str], references: list[dict], date: str) -> dict:
     return {
         "date": date,
@@ -373,6 +489,19 @@ def merge_references(*reference_groups: list[dict]) -> list[dict]:
         for reference in references
     }
     return [references_by_url[url] for url in sorted(references_by_url)]
+
+
+def definition_snapshot(practice: dict) -> dict:
+    return {
+        "domain": practice["domain"],
+        "title": practice["title"],
+        "statement": practice["statement"],
+        "applicability": {
+            "description": practice["applicability"]["description"],
+            "signals": list(practice["applicability"]["signals"]),
+        },
+        "confidence": practice["confidence"],
+    }
 
 
 def command_propose(args: argparse.Namespace) -> int:
@@ -567,13 +696,7 @@ def command_revise_practice(args: argparse.Namespace) -> int:
     practice = next((item for item in catalog["practices"] if item["id"] == args.practice_id), None)
     if not practice:
         raise ValueError(f"unknown practice: {args.practice_id}")
-    before = {
-        "domain": practice["domain"],
-        "title": practice["title"],
-        "statement": practice["statement"],
-        "applicability": practice["applicability"],
-        "confidence": practice["confidence"],
-    }
+    before = definition_snapshot(practice)
     if args.domain is not None:
         practice["domain"] = args.domain
     if args.title is not None:
@@ -596,13 +719,7 @@ def command_revise_practice(args: argparse.Namespace) -> int:
         not practice["authoritative_references"] or not practice["verification_date"]
     ):
         raise ValueError("consequential practice revision requires authoritative references and verification")
-    after = {
-        "domain": practice["domain"],
-        "title": practice["title"],
-        "statement": practice["statement"],
-        "applicability": practice["applicability"],
-        "confidence": practice["confidence"],
-    }
+    after = definition_snapshot(practice)
     if before == after and not args.authoritative_ref and not args.verified_on:
         raise ValueError("requested practice revision makes no change")
     practice["revisions"].append({
@@ -839,6 +956,24 @@ def build_parser() -> argparse.ArgumentParser:
     source_id = subs.add_parser("source-id", help="Compute a stable ID for local media without retaining it")
     source_id.add_argument("media", type=Path)
     source_id.set_defaults(func=command_source_id)
+
+    export_source = subs.add_parser(
+        "export-source", help="Export retained state and catalog references for one source"
+    )
+    export_source.add_argument("state", type=Path)
+    export_source.add_argument("catalog", type=Path)
+    export_source.add_argument("--source-id", required=True)
+    export_source.set_defaults(func=command_export_source)
+
+    delete_source = subs.add_parser(
+        "delete-source", help="Remove one source's personal data and provenance identifiers"
+    )
+    delete_source.add_argument("state", type=Path)
+    delete_source.add_argument("catalog", type=Path)
+    delete_source.add_argument("--source-id", required=True)
+    delete_source.add_argument("--deleted-on", type=iso_date, default=today())
+    delete_source.add_argument("--reason", required=True)
+    delete_source.set_defaults(func=command_delete_source)
 
     propose = subs.add_parser("propose", help="Add a video claim as candidate/advisory or append provenance")
     propose.add_argument("catalog", type=Path)

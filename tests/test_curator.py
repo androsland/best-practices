@@ -1,3 +1,4 @@
+import argparse
 import json
 import hashlib
 import importlib.util
@@ -746,6 +747,64 @@ class CurationStateTests(unittest.TestCase):
         record = json.loads(state.read_text())["processed_sources"]["instagram:DUPLICATE"]
         self.assertEqual(record["claim_ids"], [target["id"]])
 
+    def test_merge_retry_recovers_when_catalog_write_fails_after_state_write(self):
+        state = Path(self.temp.name) / "state-retry.json"
+        source_id = "practice.coding.surgical-changes"
+        target_id = "practice.coding.verify-done"
+        state.write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "2026-08-30",
+            "processed_sources": {
+                "instagram:RETRY": {"claim_ids": [source_id, target_id]},
+            },
+        }))
+        original_catalog = self.catalog.read_bytes()
+        real_atomic_write = STATE_MODULE.atomic_write
+
+        def fail_catalog_write(path, payload):
+            if path == self.catalog:
+                raise OSError("simulated catalog replace failure")
+            return real_atomic_write(path, payload)
+
+        args = argparse.Namespace(
+            catalog=self.catalog,
+            state=state,
+            from_id=source_id,
+            into_id=target_id,
+            merged_on="2026-08-31",
+            reason="Retry-safe fixture merge.",
+        )
+        with mock.patch.object(STATE_MODULE, "atomic_write", side_effect=fail_catalog_write):
+            with self.assertRaisesRegex(OSError, "simulated catalog replace failure"):
+                STATE_MODULE.command_merge_practice(args)
+
+        self.assertEqual(self.catalog.read_bytes(), original_catalog)
+        record = json.loads(state.read_text())["processed_sources"]["instagram:RETRY"]
+        self.assertEqual(record["claim_ids"], [target_id])
+
+        self.run_state(
+            "merge-practice",
+            str(self.catalog),
+            str(state),
+            "--from-id", source_id,
+            "--into-id", target_id,
+            "--merged-on", "2026-08-31",
+            "--reason", "Retry-safe fixture merge.",
+        )
+        merged = next(
+            item
+            for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == target_id
+        )
+        self.assertEqual(
+            sum(
+                revision.get("change") == "merged-duplicate-practice"
+                and revision.get("merged_from", {}).get("id") == source_id
+                for revision in merged["revisions"]
+            ),
+            1,
+        )
+
     def test_revise_practice_records_before_and_after_definition(self):
         practice_id = "practice.coding.verify-done"
         before = next(
@@ -757,6 +816,8 @@ class CurationStateTests(unittest.TestCase):
             str(self.catalog),
             "--practice-id", practice_id,
             "--statement", "Define observable completion criteria and verify them.",
+            "--applicability", "Repositories with observable completion criteria.",
+            "--signal", "acceptance.yml",
             "--revised-on", "2026-08-31",
             "--reason", "Narrowed the candidate after duplicate review.",
         )
@@ -771,6 +832,76 @@ class CurationStateTests(unittest.TestCase):
         self.assertEqual(
             revision["definition_change"]["after"]["statement"],
             "Define observable completion criteria and verify them.",
+        )
+        self.assertEqual(
+            revision["definition_change"]["before"]["applicability"],
+            before["applicability"],
+        )
+        self.assertEqual(
+            revision["definition_change"]["after"]["applicability"],
+            {
+                "description": "Repositories with observable completion criteria.",
+                "signals": ["acceptance.yml"],
+            },
+        )
+
+    def test_source_export_and_deletion_cover_state_and_revision_history(self):
+        state = Path(self.temp.name) / "privacy-state.json"
+        source_id = "instagram:PRIVACY01"
+        practice_id = "practice.example.privacy-export"
+        self.run_state("init-state", str(state))
+        self.run_state(
+            "record-source",
+            str(state),
+            "--source-id", source_id,
+            "--url", "https://www.instagram.com/reel/PRIVACY01/",
+            "--status", "processed",
+            "--claim-id", practice_id,
+            "--creator", "public-creator",
+            "--evidence-type", "transcript",
+        )
+        self.run_state(
+            "propose",
+            str(self.catalog),
+            "--practice-id", practice_id,
+            "--domain", "coding-ai",
+            "--title", "Privacy export fixture",
+            "--statement", "Retained provenance remains reviewable.",
+            "--classification", "new",
+            "--applicability", "Curated catalogs",
+            "--source-id", source_id,
+            "--reason", "Fixture source for export and deletion coverage.",
+        )
+
+        exported = self.run_state(
+            "export-source",
+            str(state),
+            str(self.catalog),
+            "--source-id", source_id,
+        )
+        payload = json.loads(exported.stdout)
+        self.assertEqual(payload["state_record"]["creator"], "public-creator")
+        self.assertEqual(payload["catalog_references"][0]["practice_id"], practice_id)
+
+        deleted = self.run_state(
+            "delete-source",
+            str(state),
+            str(self.catalog),
+            "--source-id", source_id,
+            "--deleted-on", "2026-08-31",
+            "--reason", "Verified deletion request.",
+        )
+        self.assertIn("deleted source personal data", deleted.stdout)
+        self.assertNotIn(
+            source_id,
+            json.loads(state.read_text())["processed_sources"],
+        )
+        catalog = json.loads(self.catalog.read_text())
+        self.assertNotIn(source_id, json.dumps(catalog))
+        practice = next(item for item in catalog["practices"] if item["id"] == practice_id)
+        self.assertEqual(
+            practice["revisions"][-1]["change"],
+            "removed-source-personal-data",
         )
 
     def test_annotate_merge_validates_ids_and_backfills_reference_snapshot(self):

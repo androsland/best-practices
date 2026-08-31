@@ -6,6 +6,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def fixture_artifact(root: Path, relative: str) -> Path:
+    return root / f"{relative}.fixture"
+
+
 class PackageContractTests(unittest.TestCase):
     def test_manifests_share_name_and_version(self):
         codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
@@ -30,16 +34,22 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn('name = "pytest"', uv_lock)
         self.assertIn("sha256:", uv_lock)
 
-        mixed_manifest = json.loads((ROOT / "fixtures/mixed-saas/package.json").read_text())
-        mixed_lock = json.loads((ROOT / "fixtures/mixed-saas/package-lock.json").read_text())
+        mixed_fixture = ROOT / "fixtures/mixed-saas"
+        mixed_manifest = json.loads(
+            fixture_artifact(mixed_fixture, "package.json").read_text()
+        )
+        mixed_lock = json.loads(
+            fixture_artifact(mixed_fixture, "package-lock.json").read_text()
+        )
         self.assertEqual(
             mixed_lock["packages"][""]["dependencies"],
             mixed_manifest["dependencies"],
         )
         self.assertGreater(len(mixed_lock["packages"]), 1)
 
+        secure_fixture = ROOT / "fixtures/secure-saas"
         secure_lock = json.loads(
-            (ROOT / "fixtures/secure-saas/package-lock.json").read_text()
+            fixture_artifact(secure_fixture, "package-lock.json").read_text()
         )
         lifecycle_scripts = {
             f"{path}@{package.get('version')}"
@@ -51,32 +61,34 @@ class PackageContractTests(unittest.TestCase):
             {"node_modules/esbuild@0.28.2", "node_modules/fsevents@2.3.3"},
         )
 
-        secure_fixture = ROOT / "fixtures/secure-saas"
-        self.assertEqual((secure_fixture / ".npmrc").read_text().strip(), "omit=optional")
         supply_chain_review = (
-            secure_fixture / "docs/supply-chain-review.md"
+            fixture_artifact(secure_fixture, "docs/supply-chain-review.md")
         ).read_text()
         self.assertIn("@img/sharp-libvips-*", supply_chain_review)
         self.assertIn("LGPL-3.0-or-later", supply_chain_review)
-        self.assertIn("redistribution of those optional native packages is not approved", supply_chain_review)
+        self.assertIn("never installs or redistributes", supply_chain_review)
 
     def test_security_migrations_encode_safe_rollout_and_rollback(self):
         migrations = ROOT / "fixtures/secure-saas/supabase/migrations"
         workspace_index = (
-            migrations / "202608280000_projects_workspace_index.sql"
+            fixture_artifact(migrations, "202608280000_projects_workspace_index.sql")
         ).read_text()
-        policies = (migrations / "202608280001_workspace_policies.sql").read_text()
+        policies = fixture_artifact(
+            migrations, "202608280001_workspace_policies.sql"
+        ).read_text()
         enable_path = (
             ROOT
-            / "fixtures/secure-saas/supabase/release-phases/phase-2/202608280002_enable_projects_rls.sql"
+            / "fixtures/secure-saas/supabase/release-phases/phase-2/202608280002_enable_projects_rls.sql.fixture"
         )
         enable = enable_path.read_text()
-        index = (migrations / "202608280003_processed_events_unique_index.sql").read_text()
+        index = fixture_artifact(
+            migrations, "202608280003_processed_events_unique_index.sql"
+        ).read_text()
         rollback = (
-            ROOT / "fixtures/secure-saas/supabase/rollback/202608280003_security.sql"
+            ROOT / "fixtures/secure-saas/supabase/rollback/202608280003_security.sql.fixture"
         ).read_text()
 
-        self.assertFalse((migrations / enable_path.name).exists())
+        self.assertFalse((migrations / enable_path.name.removesuffix(".fixture")).exists())
         self.assertIn("create index concurrently projects_workspace_id_idx", workspace_index.lower())
         self.assertGreaterEqual(policies.lower().count("create policy"), 4)
         self.assertIn("enable row level security", enable.lower())
@@ -96,22 +108,38 @@ class PackageContractTests(unittest.TestCase):
 
     def test_negative_api_fixture_has_no_runtime_entrypoint(self):
         fixture = ROOT / "fixtures/mixed-saas"
-        manifest = json.loads((fixture / "package.json").read_text())
-        server = (fixture / "src/server.js").read_text()
+        manifest = json.loads(fixture_artifact(fixture, "package.json").read_text())
+        server = fixture_artifact(fixture, "src/server.js").read_text()
         self.assertTrue(manifest["private"])
-        self.assertEqual(manifest["scripts"]["test"], "node --test")
         self.assertNotIn("start", manifest.get("scripts", {}))
         self.assertNotIn(".listen(", server)
         self.assertNotIn("module.exports", server)
+        self.assertFalse((fixture / "package.json").exists())
+        self.assertFalse((fixture / "src/server.js").exists())
+
+    def test_saas_fixtures_are_marked_inert_virtual_projects(self):
+        for name in ("mixed-saas", "secure-saas"):
+            fixture = ROOT / "fixtures" / name
+            marker = json.loads(
+                (fixture / ".project-practices-fixture.json").read_text()
+            )
+            self.assertEqual(
+                marker,
+                {
+                    "schema_version": 1,
+                    "artifact_type": "static-analyzer-virtual-project",
+                },
+            )
+            self.assertTrue(list(fixture.rglob("*.fixture")))
 
     def test_root_ci_runs_the_single_validation_entrypoint(self):
         validation_script = (ROOT / "scripts/validate.sh").read_text()
-        self.assertIn("npm --prefix fixtures/mixed-saas test", validation_script)
+        self.assertNotIn("npm --prefix fixtures", validation_script)
         workflow = (ROOT / ".github/workflows/validate.yml").read_text()
         self.assertIn("./scripts/validate.sh", workflow)
         self.assertIn("actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955", workflow)
         fixture_workflow = (
-            ROOT / "fixtures/secure-saas/.github/workflows/validate.yml"
+            ROOT / "fixtures/secure-saas/.github/workflows/validate.yml.fixture"
         ).read_text()
         self.assertIn(
             "actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955",

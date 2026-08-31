@@ -51,3 +51,24 @@ Before a release that changes the curator prompt, Moviola integration, classific
 ## Retained record
 
 Keep source ID, canonical URL, creator/profile, publication date when known, duration when known, evidence type, processing date, claim classifications, and catalog revision linkage. For a local file, compute its stable ID with `python3 scripts/curation_state.py source-id <path>` before cleanup. Do not retain session cookies, signed media URLs, raw media, or transient download paths.
+
+Creator/profile names, canonical profile or post URLs, and linkable platform IDs are personal data even when public. Review retained source records at least annually and remove them no later than 365 days after processing unless a documented active-practice review still needs that source. Do not extend retention merely because storage is convenient.
+
+Export everything retained for a source before responding to an access request:
+
+```bash
+python3 scripts/curation_state.py export-source state.json knowledge/practices.json \
+  --source-id instagram:SHORTCODE
+```
+
+The command writes the state record and every current/revision catalog reference to standard output. Treat that export as personal data, deliver it through an approved channel, and delete transient copies afterward.
+
+Remove a source after its retention period or a verified deletion request:
+
+```bash
+python3 scripts/curation_state.py delete-source state.json knowledge/practices.json \
+  --source-id instagram:SHORTCODE \
+  --reason "Verified deletion request"
+```
+
+Deletion removes the state record and the identifier from current and historical catalog provenance, then adds an identifier-free erasure revision. Privacy deletion is the explicit exception to append-only provenance. Re-review any practice left without sufficient evidence and downgrade or remove it separately. The command updates current files; repository owners must also apply their approved history-rewrite, backup-expiry, fork, and release-artifact procedure when deletion must cover older Git history or copies outside the repository.

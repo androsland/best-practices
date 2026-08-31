@@ -38,6 +38,8 @@ LOCK_NAMES = {
 }
 CODE_SUFFIXES = {".c", ".cc", ".cpp", ".cs", ".go", ".java", ".js", ".jsx", ".kt", ".php", ".py", ".rb", ".rs", ".swift", ".ts", ".tsx"}
 TEST_RE = re.compile(r"(^|/)(tests?|spec|__tests__)(/|$)|(^|/)[^/]+\.(test|spec)\.[^.]+$", re.I)
+FIXTURE_MARKER = ".project-practices-fixture.json"
+FIXTURE_ARTIFACT_TYPE = "static-analyzer-virtual-project"
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class Repository:
         self.max_inventory_files = max_inventory_files
         self.max_text_candidates = max_text_candidates
         self.max_skipped_path_samples = max_skipped_path_samples
+        self.virtual_fixture = self._is_virtual_fixture()
         self.paths: list[Path] = []
         self.text_files: list[TextFile] = []
         self.skipped_text_paths: list[str] = []
@@ -80,6 +83,25 @@ class Repository:
         self.inventory_truncated = False
         self.scanned_text_bytes = 0
         self._inventory()
+
+    def _is_virtual_fixture(self) -> bool:
+        marker = self.root / FIXTURE_MARKER
+        if marker.is_symlink() or not marker.is_file():
+            return False
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return (
+            data.get("schema_version") == 1
+            and data.get("artifact_type") == FIXTURE_ARTIFACT_TYPE
+        )
+
+    def _logical_rel(self, path: Path) -> str:
+        rel = path.relative_to(self.root).as_posix()
+        if self.virtual_fixture and rel.endswith(".fixture"):
+            return rel.removesuffix(".fixture")
+        return rel
 
     def _record_skipped_text(self, rel: str) -> None:
         self.skipped_text_path_count += 1
@@ -106,7 +128,7 @@ class Repository:
                 self.text_candidate_count += 1
                 try:
                     size = path.stat().st_size
-                    rel = path.relative_to(self.root).as_posix()
+                    rel = self._logical_rel(path)
                     if size > self.max_file_bytes:
                         self._record_skipped_text(rel)
                         continue
@@ -120,13 +142,18 @@ class Repository:
                 self.text_files.append(TextFile(path, rel, tuple(text.splitlines())))
 
     def _is_text_candidate(self, path: Path) -> bool:
-        return path.name in MANIFEST_NAMES or path.name.startswith("Dockerfile") or path.suffix.lower() in TEXT_SUFFIXES
+        logical = Path(self._logical_rel(path))
+        return logical.name in MANIFEST_NAMES or logical.name.startswith("Dockerfile") or logical.suffix.lower() in TEXT_SUFFIXES
 
     def relatives(self) -> list[str]:
-        return [p.relative_to(self.root).as_posix() for p in self.paths]
+        return [self._logical_rel(path) for path in self.paths]
 
     def named(self, names: set[str]) -> list[str]:
-        return sorted(p.relative_to(self.root).as_posix() for p in self.paths if p.name in names)
+        return sorted(
+            self._logical_rel(path)
+            for path in self.paths
+            if Path(self._logical_rel(path)).name in names
+        )
 
     def paths_matching(self, pattern: re.Pattern[str]) -> list[str]:
         return sorted(rel for rel in self.relatives() if pattern.search(rel))
@@ -147,14 +174,19 @@ class Repository:
         return bool(self.grep(patterns, limit=1))
 
     def nearest_context(self) -> list[str]:
-        manifests = sorted(p.relative_to(self.root).as_posix() for p in self.paths if p.name in MANIFEST_NAMES or p.name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"})
+        manifests = sorted(
+            self._logical_rel(path)
+            for path in self.paths
+            if Path(self._logical_rel(path)).name
+            in MANIFEST_NAMES | {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+        )
         return manifests[:3] or ["."]
 
 
 def package_contexts(repo: Repository) -> list[PackageContext]:
     contexts: list[PackageContext] = []
     for item in repo.text_files:
-        if item.path.name != "package.json":
+        if Path(item.rel).name != "package.json":
             continue
         try:
             data = json.loads(item.text)
@@ -199,7 +231,7 @@ def detect_stack(repo: Repository) -> dict:
             "stripe": {"stripe"}, "openai": {"openai"}, "anthropic": {"@anthropic-ai/sdk"},
         }.items() if deps & packages
     })
-    python_blob = "\n".join(i.text for i in repo.text_files if i.path.name in {"pyproject.toml", "requirements.txt", "Pipfile"})
+    python_blob = "\n".join(i.text for i in repo.text_files if Path(i.rel).name in {"pyproject.toml", "requirements.txt", "Pipfile"})
     for label, pattern in {"django": r"\bdjango\b", "fastapi": r"\bfastapi\b", "flask": r"\bflask\b", "sqlalchemy": r"\bsqlalchemy\b", "pytest": r"\bpytest\b", "openai": r"\bopenai\b", "anthropic": r"\banthropic\b"}.items():
         if re.search(pattern, python_blob, re.I):
             frameworks.append(label)
@@ -260,7 +292,7 @@ def collect_development_findings(repo: Repository, stack: dict) -> list[dict]:
         for name in ("test", "test:unit", "check")
         if name in package.scripts
     ]
-    python_test_cmd = repo.grep([r"\b(pytest|unittest)\b"], paths=(i for i in repo.text_files if i.path.name in {"pyproject.toml", "tox.ini", "Makefile"}))
+    python_test_cmd = repo.grep([r"\b(pytest|unittest)\b"], paths=(i for i in repo.text_files if Path(i.rel).name in {"pyproject.toml", "tox.ini", "Makefile"}))
     if not surfaces["code"]:
         results.append(finding("DEV-TEST-001", "coding-ai", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No executable source-code surface was detected.", None))
     elif test_paths and (test_commands or python_test_cmd):
@@ -299,7 +331,7 @@ def collect_security_findings(repo: Repository, stack: dict) -> list[dict]:
     private_key_re = re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
     assignment_re = re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"]?(?!\$\{|process\.env|os\.environ|env\.|<|example|changeme|test|dummy)[A-Za-z0-9_./+=-]{16,}")
     for item in repo.text_files:
-        if item.path.name.endswith((".example", ".sample")) or "/fixtures/" in f"/{item.rel}/":
+        if Path(item.rel).name.endswith((".example", ".sample")) or "/fixtures/" in f"/{item.rel}/":
             continue
         for line_no, line in enumerate(item.lines, 1):
             if private_key_re.search(line) or assignment_re.search(line):

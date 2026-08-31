@@ -1,13 +1,13 @@
 # Mixed SaaS fixture
 
-This is a non-production negative audit fixture. It is never started, built, or deployed; its package has no start script, its Express app neither listens nor exports, and root contract tests enforce those boundaries. Unit tests exercise the handler contracts without opening a network listener. The fixture intentionally preserves missing tenant authorization and webhook authenticity/idempotency controls as negative audit evidence. `container-negative-fixture.json` records unsafe container claims as data rather than exposing a runnable Dockerfile.
+This is inert negative analyzer data, not an application. Files ending in `.fixture` are never installed, started, built, tested as application code, or deployed. When this directory is passed directly to the audit engine, the marker file makes those artifacts appear under their logical names solely for stack detection and evidence tests.
 
-Dependency versions and the lockfile remain real and reviewable even though application behavior is intentionally incomplete.
+The virtual package and lockfile remain realistic analyzer inputs. `container-negative-fixture.json` records unsafe container claims as data rather than exposing a runnable Dockerfile.
 
 ## Fixture API contracts
 
-- `POST /login` validates the credential shape and returns stable success, denial, and dependency-failure responses.
-- `POST /webhook` validates the event shape and returns stable success/failure responses. Missing signature verification and idempotency remain intentional negative evidence.
-- `GET /projects?tenant_id=...&limit=...&cursor=...` returns a bounded `{ "items": [...], "next_cursor": "..." }` page. Trusting the caller-supplied tenant ID remains intentional negative evidence.
+- `POST /login` accepts an unspecified JSON body and returns `{ "ok": true }`. Missing validation/authentication and unspecified errors are intentional negative evidence.
+- `POST /webhook` accepts an unspecified body and returns `{ "received": true }`. Missing signature verification, idempotency, and a stable error envelope are intentional negative evidence.
+- `GET /projects?tenant_id=...` returns a JSON array. Trusting the caller-supplied tenant ID, unbounded results, and unspecified errors are intentional negative evidence.
 
-These routes describe static analyzer inputs, not supported external APIs.
+These routes describe virtual static-analyzer inputs, not supported external APIs.

@@ -60,14 +60,14 @@ class AuditBehaviorTests(unittest.TestCase):
         ):
             self.assertEqual(findings[check_id]["status"], "PASS", check_id)
 
-    def test_mixed_saas_exposes_security_failures_without_overclaiming_authz(self):
+    def test_mixed_saas_exposes_failures_without_overclaiming_authz(self):
         report = audit("mixed-saas")
         findings = findings_by_id(report)
         self.assertEqual(report["summary"]["verdict"], "NEEDS_WORK")
-        self.assertEqual(findings["DEV-TEST-001"]["status"], "PASS")
+        self.assertEqual(findings["DEV-TEST-001"]["status"], "MISSING")
         self.assertEqual(findings["DEV-DEPS-001"]["status"], "PASS")
         self.assertEqual(findings["SEC-RLS-001"]["status"], "MISSING")
-        self.assertEqual(findings["SEC-WEBHOOK-001"]["status"], "PARTIAL")
+        self.assertEqual(findings["SEC-WEBHOOK-001"]["status"], "MISSING")
         self.assertEqual(findings["TEN-ISO-001"]["status"], "PARTIAL")
         self.assertEqual(findings["SEC-AUTHZ-001"]["status"], "NOT_VERIFIABLE")
 
@@ -161,6 +161,29 @@ class AuditBehaviorTests(unittest.TestCase):
             candidate_limited = audit_path(root, "--max-text-candidates", "2")
             self.assertTrue(candidate_limited["evidence_budget"]["inventory_truncated"])
             self.assertEqual(candidate_limited["evidence_budget"]["text_candidate_count"], 2)
+
+    def test_fixture_suffix_is_virtualized_only_for_marked_fixture_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app.py.fixture").write_text("print('analyzer input')\n")
+
+            ordinary = audit_path(root)
+            self.assertNotIn("python", ordinary["stack"]["languages"])
+            self.assertEqual(
+                findings_by_id(ordinary)["DEV-TEST-001"]["status"],
+                "NOT_APPLICABLE",
+            )
+
+            (root / ".project-practices-fixture.json").write_text(json.dumps({
+                "schema_version": 1,
+                "artifact_type": "static-analyzer-virtual-project",
+            }))
+            fixture = audit_path(root)
+            self.assertIn("python", fixture["stack"]["languages"])
+            self.assertEqual(
+                findings_by_id(fixture)["DEV-TEST-001"]["status"],
+                "MISSING",
+            )
 
     def test_secret_enforcement_reports_only_paths_and_honors_exclusions(self):
         with tempfile.TemporaryDirectory() as directory:

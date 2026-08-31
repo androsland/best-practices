@@ -7,8 +7,8 @@ Reviewed 2026-08-29 against the committed npm lockfile:
 
 CI installs from `package-lock.json`, runs the vulnerability audit, and does not approve newly introduced lifecycle scripts implicitly.
 
-## Optional native image dependencies
+## Virtual optional native image dependencies
 
-`next@16.3.3` declares optional Sharp platform packages. The committed lockfile therefore records prebuilt `@img/sharp-*` packages and `@img/sharp-libvips-*`; the latter are licensed `LGPL-3.0-or-later`. This fixture does not use Next image optimization, and redistribution of those optional native packages is not approved by this review.
+`next@16.3.3` declares optional Sharp platform packages. The virtual lockfile therefore records prebuilt `@img/sharp-*` packages and `@img/sharp-libvips-*`; the latter are licensed `LGPL-3.0-or-later`. They are retained as analyzer evidence only.
 
-The project-level `.npmrc` sets `omit=optional`, so fixture installs and build artifacts exclude Sharp, libvips, and all other optional dependencies. Removing that setting or adding image optimization requires a fresh license and redistribution review, any required compliance materials, and an update to this document before release.
+This repository never installs or redistributes the virtual dependency graph. Converting this fixture into an executable project would require a fresh license and redistribution review before any installation or release.
