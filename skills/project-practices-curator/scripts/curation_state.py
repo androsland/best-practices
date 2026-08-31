@@ -365,6 +365,16 @@ def revision(classification: str, reason: str, source_ids: list[str], references
     }
 
 
+def merge_references(*reference_groups: list[dict]) -> list[dict]:
+    """Merge authoritative reference objects by URL, preferring later records."""
+    references_by_url = {
+        reference["url"]: reference
+        for references in reference_groups
+        for reference in references
+    }
+    return [references_by_url[url] for url in sorted(references_by_url)]
+
+
 def command_propose(args: argparse.Namespace) -> int:
     input_errors = proposal_input_errors(args)
     if input_errors:
@@ -385,6 +395,9 @@ def command_propose(args: argparse.Namespace) -> int:
     new_revision = revision(args.classification, args.reason, args.source_id, refs, args.verified_on or today())
     if existing:
         existing["source_video_ids"] = sorted(set(existing["source_video_ids"] + args.source_id))
+        existing["authoritative_references"] = merge_references(
+            existing["authoritative_references"], refs
+        )
         existing["revisions"].append(new_revision)
         # A video proposal never changes an existing enforcement state or statement.
         action = "appended provenance to"
@@ -413,6 +426,342 @@ def command_propose(args: argparse.Namespace) -> int:
         raise ValueError("catalog is invalid after proposed update: " + "; ".join(errors))
     atomic_write(args.catalog, catalog)
     print(f"{action}: {args.practice_id}")
+    return 0
+
+
+def command_repair_references(args: argparse.Namespace) -> int:
+    """Recover missing top-level reference objects from identical URLs elsewhere."""
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before reference repair: " + "; ".join(errors))
+
+    reference_candidates: dict[str, dict[tuple[str, str], dict]] = {}
+    for practice in catalog["practices"]:
+        for reference in practice["authoritative_references"]:
+            candidates = reference_candidates.setdefault(reference["url"], {})
+            candidates[(reference["title"], reference["supports"])] = reference
+
+    repaired_count = 0
+    repaired_practices = 0
+    unresolved: list[tuple[str, str, str]] = []
+    for practice in catalog["practices"]:
+        present_urls = {reference["url"] for reference in practice["authoritative_references"]}
+        revision_urls = {
+            url
+            for item in practice["revisions"]
+            for url in item.get("authoritative_urls", [])
+        }
+        recovered: list[dict] = []
+        for url in sorted(revision_urls - present_urls):
+            candidates = list(reference_candidates.get(url, {}).values())
+            if len(candidates) == 1:
+                recovered.append(candidates[0])
+            else:
+                disposition = "not found" if not candidates else "ambiguous"
+                unresolved.append((practice["id"], url, disposition))
+        if not recovered:
+            continue
+        practice["authoritative_references"] = merge_references(
+            practice["authoritative_references"], recovered
+        )
+        recovered_urls = sorted(reference["url"] for reference in recovered)
+        practice["revisions"].append({
+            "date": args.repaired_on,
+            "change": "repaired-authoritative-reference-index",
+            "reason": (
+                "Recovered authoritative reference metadata from matching URLs already "
+                "present elsewhere in the catalog; no new source proposition was introduced."
+            ),
+            "source_video_ids": [],
+            "authoritative_urls": recovered_urls,
+        })
+        repaired_count += len(recovered)
+        repaired_practices += 1
+
+    if repaired_count:
+        catalog["updated_at"] = today()
+        errors = validate_catalog(catalog)
+        if errors:
+            raise ValueError("catalog is invalid after reference repair: " + "; ".join(errors))
+        atomic_write(args.catalog, catalog)
+
+    print(
+        f"repaired authoritative references: {repaired_count} across "
+        f"{repaired_practices} practices"
+    )
+    for practice_id, url, disposition in unresolved:
+        print(f"unresolved authoritative reference ({disposition}): {practice_id} | {url}")
+    return 0
+
+
+def command_reclassify_domain(args: argparse.Namespace) -> int:
+    """Change a practice domain through a validated, append-only revision."""
+    input_errors = [
+        error
+        for label, value, limit in (
+            ("target domain", args.to_domain, TEXT_LIMITS["domain"]),
+            ("reason", args.reason, TEXT_LIMITS["reason"]),
+        )
+        if (error := validate_text(label, value, limit))
+    ]
+    if input_errors:
+        raise ValueError("domain reclassification rejected: " + "; ".join(input_errors))
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before domain reclassification: " + "; ".join(errors))
+    practice = next((item for item in catalog["practices"] if item["id"] == args.practice_id), None)
+    if not practice:
+        raise ValueError(f"unknown practice: {args.practice_id}")
+    previous_domain = practice["domain"]
+    if previous_domain == args.to_domain:
+        raise ValueError(f"practice already uses domain: {args.to_domain}")
+    practice["domain"] = args.to_domain
+    practice["revisions"].append({
+        "date": args.reclassified_on,
+        "change": "reclassified-domain",
+        "reason": args.reason,
+        "source_video_ids": [],
+        "authoritative_urls": sorted(
+            reference["url"] for reference in practice["authoritative_references"]
+        ),
+        "domain_change": {"from": previous_domain, "to": args.to_domain},
+    })
+    catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after domain reclassification: " + "; ".join(errors))
+    atomic_write(args.catalog, catalog)
+    print(f"reclassified domain: {args.practice_id} ({previous_domain} -> {args.to_domain})")
+    return 0
+
+
+def command_revise_practice(args: argparse.Namespace) -> int:
+    """Revise a candidate definition while retaining an append-only before/after record."""
+    requested = {
+        "domain": args.domain,
+        "title": args.title,
+        "statement": args.statement,
+        "applicability": args.applicability,
+        "confidence": args.confidence,
+    }
+    if not any(value is not None for value in requested.values()) and args.signal is None:
+        raise ValueError("practice revision requires at least one changed definition field")
+    fields = [
+        ("reason", args.reason, TEXT_LIMITS["reason"]),
+        *((key, value, TEXT_LIMITS[key]) for key, value in requested.items()
+          if value is not None and key in TEXT_LIMITS),
+        *(("signal", value, TEXT_LIMITS["signal"]) for value in (args.signal or [])),
+    ]
+    input_errors = [
+        error for label, value, limit in fields if (error := validate_text(label, value, limit))
+    ]
+    if input_errors:
+        raise ValueError("practice revision rejected: " + "; ".join(input_errors))
+
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before practice revision: " + "; ".join(errors))
+    practice = next((item for item in catalog["practices"] if item["id"] == args.practice_id), None)
+    if not practice:
+        raise ValueError(f"unknown practice: {args.practice_id}")
+    before = {
+        "domain": practice["domain"],
+        "title": practice["title"],
+        "statement": practice["statement"],
+        "applicability": practice["applicability"],
+        "confidence": practice["confidence"],
+    }
+    if args.domain is not None:
+        practice["domain"] = args.domain
+    if args.title is not None:
+        practice["title"] = args.title
+    if args.statement is not None:
+        practice["statement"] = args.statement
+    if args.applicability is not None:
+        practice["applicability"]["description"] = args.applicability
+    if args.signal is not None:
+        practice["applicability"]["signals"] = sorted(set(args.signal))
+    if args.confidence is not None:
+        practice["confidence"] = args.confidence
+    if args.authoritative_ref:
+        practice["authoritative_references"] = merge_references(
+            practice["authoritative_references"], args.authoritative_ref
+        )
+    if args.verified_on:
+        practice["verification_date"] = args.verified_on
+    if practice["domain"] in CONSEQUENTIAL_DOMAINS and (
+        not practice["authoritative_references"] or not practice["verification_date"]
+    ):
+        raise ValueError("consequential practice revision requires authoritative references and verification")
+    after = {
+        "domain": practice["domain"],
+        "title": practice["title"],
+        "statement": practice["statement"],
+        "applicability": practice["applicability"],
+        "confidence": practice["confidence"],
+    }
+    if before == after and not args.authoritative_ref and not args.verified_on:
+        raise ValueError("requested practice revision makes no change")
+    practice["revisions"].append({
+        "date": args.revised_on,
+        "change": "revised-candidate-definition",
+        "reason": args.reason,
+        "source_video_ids": [],
+        "authoritative_urls": sorted(
+            reference["url"] for reference in practice["authoritative_references"]
+        ),
+        "definition_change": {"before": before, "after": after},
+    })
+    catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after practice revision: " + "; ".join(errors))
+    atomic_write(args.catalog, catalog)
+    print(f"revised candidate definition: {args.practice_id}")
+    return 0
+
+
+def command_merge_practice(args: argparse.Namespace) -> int:
+    """Merge a duplicate practice into a canonical practice and repair state links."""
+    if args.from_id == args.into_id:
+        raise ValueError("--from-id and --into-id must differ")
+    if error := validate_text("reason", args.reason, TEXT_LIMITS["reason"]):
+        raise ValueError(f"merge rejected: {error}")
+
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before merge: " + "; ".join(errors))
+    practices = catalog["practices"]
+    source = next((p for p in practices if p["id"] == args.from_id), None)
+    target = next((p for p in practices if p["id"] == args.into_id), None)
+    if not source:
+        raise ValueError(f"unknown source practice: {args.from_id}")
+    if not target:
+        raise ValueError(f"unknown target practice: {args.into_id}")
+
+    source_ids = sorted(set(source["source_video_ids"]))
+    target["source_video_ids"] = sorted(set(target["source_video_ids"] + source_ids))
+    combined_references = {
+        (reference["url"], reference["title"], reference["supports"]): reference
+        for reference in target["authoritative_references"] + source["authoritative_references"]
+    }
+    target["authoritative_references"] = [
+        combined_references[key] for key in sorted(combined_references)
+    ]
+    verified_dates = [
+        date for date in (target.get("verification_date"), source.get("verification_date")) if date
+    ]
+    target["verification_date"] = max(verified_dates) if verified_dates else None
+    target["revisions"].extend(source["revisions"])
+    target["revisions"].append({
+        "date": args.merged_on,
+        "change": "merged-duplicate-practice",
+        "reason": args.reason,
+        "source_video_ids": source_ids,
+        "authoritative_urls": sorted({reference["url"] for reference in combined_references.values()}),
+        "merged_from": {
+            key: source[key]
+            for key in (
+                "id",
+                "domain",
+                "title",
+                "statement",
+                "enforcement_state",
+                "applicability",
+                "confidence",
+                "verification_date",
+                "authoritative_references",
+            )
+        },
+    })
+    practices.remove(source)
+    practices.sort(key=lambda item: item["id"])
+    catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after merge: " + "; ".join(errors))
+
+    state = read_json(args.state)
+    records = state.get("processed_sources")
+    if not isinstance(records, dict):
+        raise ValueError("state.processed_sources must be an object")
+    for record in records.values():
+        claim_ids = record.get("claim_ids", [])
+        if not isinstance(claim_ids, list):
+            raise ValueError("state claim_ids must be arrays")
+        if args.from_id in claim_ids:
+            record["claim_ids"] = sorted(
+                {args.into_id if claim_id == args.from_id else claim_id for claim_id in claim_ids}
+            )
+    state["updated_at"] = today()
+
+    # State-first is retry-safe: the canonical target already exists. Catalog-first
+    # could leave state pointing at a removed practice if the second replace failed.
+    atomic_write(args.state, state)
+    atomic_write(args.catalog, catalog)
+    print(f"merged practice: {args.from_id} -> {args.into_id}")
+    return 0
+
+
+def command_annotate_merge(args: argparse.Namespace) -> int:
+    """Backfill the source definition for merge history created by an older tool."""
+    fields = (
+        ("source domain", args.from_domain, TEXT_LIMITS["domain"]),
+        ("source title", args.from_title, TEXT_LIMITS["title"]),
+        ("source statement", args.from_statement, TEXT_LIMITS["statement"]),
+        ("source applicability", args.from_applicability, TEXT_LIMITS["applicability"]),
+        *(("source signal", value, TEXT_LIMITS["signal"]) for value in args.from_signal),
+    )
+    errors = [
+        error for label, value, limit in fields if (error := validate_text(label, value, limit))
+    ]
+    if errors:
+        raise ValueError("merge annotation rejected: " + "; ".join(errors))
+    catalog = read_json(args.catalog)
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid before merge annotation: " + "; ".join(errors))
+    target = next((p for p in catalog["practices"] if p["id"] == args.practice_id), None)
+    if not target:
+        raise ValueError(f"unknown target practice: {args.practice_id}")
+    merge_revision = next(
+        (
+            item
+            for item in reversed(target["revisions"])
+            if item.get("change") == "merged-duplicate-practice"
+            and (
+                "merged_from" not in item
+                or "authoritative_references" not in item["merged_from"]
+            )
+        ),
+        None,
+    )
+    if not merge_revision:
+        raise ValueError(f"no unannotated merge revision found for: {args.practice_id}")
+    merge_revision["merged_from"] = {
+        "id": args.from_id,
+        "domain": args.from_domain,
+        "title": args.from_title,
+        "statement": args.from_statement,
+        "enforcement_state": args.from_enforcement_state,
+        "applicability": {
+            "description": args.from_applicability,
+            "signals": sorted(set(args.from_signal)),
+        },
+        "confidence": args.from_confidence,
+        "verification_date": args.from_verified_on,
+        "authoritative_references": args.from_authoritative_ref,
+    }
+    catalog["updated_at"] = today()
+    errors = validate_catalog(catalog)
+    if errors:
+        raise ValueError("catalog is invalid after merge annotation: " + "; ".join(errors))
+    atomic_write(args.catalog, catalog)
+    print(f"annotated merge history: {args.from_id} -> {args.practice_id}")
     return 0
 
 
@@ -508,6 +857,71 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--reason", required=True)
     propose.set_defaults(func=command_propose)
 
+    repair_references = subs.add_parser(
+        "repair-references",
+        help="Recover revision reference metadata from matching catalog URLs",
+    )
+    repair_references.add_argument("catalog", type=Path)
+    repair_references.add_argument("--repaired-on", type=iso_date, default=today())
+    repair_references.set_defaults(func=command_repair_references)
+
+    reclassify_domain = subs.add_parser(
+        "reclassify-domain", help="Change a practice domain with revision history"
+    )
+    reclassify_domain.add_argument("catalog", type=Path)
+    reclassify_domain.add_argument("--practice-id", required=True)
+    reclassify_domain.add_argument("--to-domain", required=True)
+    reclassify_domain.add_argument("--reclassified-on", type=iso_date, default=today())
+    reclassify_domain.add_argument("--reason", required=True)
+    reclassify_domain.set_defaults(func=command_reclassify_domain)
+
+    revise = subs.add_parser(
+        "revise-practice", help="Revise a candidate definition with before/after history"
+    )
+    revise.add_argument("catalog", type=Path)
+    revise.add_argument("--practice-id", required=True)
+    revise.add_argument("--domain")
+    revise.add_argument("--title")
+    revise.add_argument("--statement")
+    revise.add_argument("--applicability")
+    revise.add_argument("--signal", action="append", default=None)
+    revise.add_argument("--confidence", choices=("HIGH", "MEDIUM", "LOW"))
+    revise.add_argument("--authoritative-ref", type=parse_reference, action="append", default=[])
+    revise.add_argument("--verified-on", type=iso_date)
+    revise.add_argument("--revised-on", type=iso_date, default=today())
+    revise.add_argument("--reason", required=True)
+    revise.set_defaults(func=command_revise_practice)
+
+    merge = subs.add_parser("merge-practice", help="Merge a duplicate practice and repair state links")
+    merge.add_argument("catalog", type=Path)
+    merge.add_argument("state", type=Path)
+    merge.add_argument("--from-id", required=True)
+    merge.add_argument("--into-id", required=True)
+    merge.add_argument("--merged-on", type=iso_date, default=today())
+    merge.add_argument("--reason", required=True)
+    merge.set_defaults(func=command_merge_practice)
+
+    annotate_merge = subs.add_parser(
+        "annotate-merge", help="Backfill a source definition on older merge history"
+    )
+    annotate_merge.add_argument("catalog", type=Path)
+    annotate_merge.add_argument("--practice-id", required=True)
+    annotate_merge.add_argument("--from-id", required=True)
+    annotate_merge.add_argument("--from-domain", required=True)
+    annotate_merge.add_argument("--from-title", required=True)
+    annotate_merge.add_argument("--from-statement", required=True)
+    annotate_merge.add_argument(
+        "--from-enforcement-state", choices=("candidate", "advisory", "enforceable"), required=True
+    )
+    annotate_merge.add_argument("--from-applicability", required=True)
+    annotate_merge.add_argument("--from-signal", action="append", default=[])
+    annotate_merge.add_argument("--from-confidence", choices=("HIGH", "MEDIUM", "LOW"), required=True)
+    annotate_merge.add_argument("--from-verified-on", type=iso_date)
+    annotate_merge.add_argument(
+        "--from-authoritative-ref", type=parse_reference, action="append", default=[]
+    )
+    annotate_merge.set_defaults(func=command_annotate_merge)
+
     promote = subs.add_parser("promote", help="Separate reviewed gate from candidate to enforceable")
     promote.add_argument("catalog", type=Path)
     promote.add_argument("--practice-id", required=True)
@@ -525,6 +939,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if hasattr(args, "practice_id") and not PRACTICE_ID.fullmatch(args.practice_id):
         print("error: --practice-id must match practice.[a-z0-9.-]+", file=sys.stderr)
         return 2
+    for attribute in ("from_id", "into_id"):
+        value = getattr(args, attribute, None)
+        if value is not None and not PRACTICE_ID.fullmatch(value):
+            print(f"error: --{attribute.replace('_', '-')} must match practice.[a-z0-9.-]+", file=sys.stderr)
+            return 2
     try:
         return args.func(args)
     except (OSError, ValueError, json.JSONDecodeError) as exc:

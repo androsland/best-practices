@@ -595,7 +595,220 @@ class CurationStateTests(unittest.TestCase):
             self.assertEqual(revision["change"], f"video-claim-{classification}")
             self.assertEqual(revision["date"], "2026-08-29")
             self.assertIn("https://example.com/primary", revision["authoritative_urls"])
+            references = [
+                reference
+                for reference in practice["authoritative_references"]
+                if reference["url"] == "https://example.com/primary"
+            ]
+            self.assertEqual(len(references), 1)
+            self.assertEqual(references[0]["title"], "Primary docs")
+            self.assertEqual(
+                references[0]["supports"], "Supports fixture classification behavior."
+            )
             self.assertIn(f"instagram:{classification.upper()}", practice["source_video_ids"])
+
+    def test_repair_references_recovers_only_unambiguous_existing_metadata(self):
+        data = json.loads(self.catalog.read_text())
+        source = next(
+            item
+            for item in data["practices"]
+            if item["id"] == "practice.infrastructure.release-recovery"
+        )
+        target = next(
+            item for item in data["practices"] if item["id"] == "practice.coding.surgical-changes"
+        )
+        recoverable = next(
+            reference
+            for reference in source["authoritative_references"]
+            if reference["url"] == "https://sre.google/workbook/canarying-releases/"
+        )
+        unknown_url = "https://example.com/unrecoverable-reference"
+        target["revisions"][-1]["authoritative_urls"].extend(
+            [recoverable["url"], unknown_url]
+        )
+        self.catalog.write_text(json.dumps(data))
+
+        completed = self.run_state(
+            "repair-references", str(self.catalog), "--repaired-on", "2026-08-31"
+        )
+        repaired = next(
+            item
+            for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == target["id"]
+        )
+        self.assertIn(recoverable, repaired["authoritative_references"])
+        self.assertNotIn(
+            unknown_url,
+            {reference["url"] for reference in repaired["authoritative_references"]},
+        )
+        self.assertEqual(
+            repaired["revisions"][-1]["change"],
+            "repaired-authoritative-reference-index",
+        )
+        self.assertIn(f"{target['id']} | {unknown_url}", completed.stdout)
+
+    def test_reclassify_domain_records_previous_and_target_domains(self):
+        practice_id = "practice.reliability.concurrent-write-conflicts"
+        data = json.loads(self.catalog.read_text())
+        fixture = next(item for item in data["practices"] if item["id"] == practice_id)
+        fixture["domain"] = "reliability"
+        self.catalog.write_text(json.dumps(data))
+        completed = self.run_state(
+            "reclassify-domain",
+            str(self.catalog),
+            "--practice-id",
+            practice_id,
+            "--to-domain",
+            "data-reliability",
+            "--reclassified-on",
+            "2026-08-31",
+            "--reason",
+            "Concurrent-write correctness belongs with the data reliability controls.",
+        )
+        self.assertIn("reclassified domain", completed.stdout)
+        practice = next(
+            item
+            for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == practice_id
+        )
+        self.assertEqual(practice["domain"], "data-reliability")
+        self.assertEqual(practice["revisions"][-1]["change"], "reclassified-domain")
+        self.assertEqual(
+            practice["revisions"][-1]["domain_change"],
+            {"from": "reliability", "to": "data-reliability"},
+        )
+
+    def test_merge_practice_preserves_provenance_and_repairs_state_links(self):
+        state = Path(self.temp.name) / "state.json"
+        state.write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "2026-08-30",
+            "processed_sources": {
+                "instagram:DUPLICATE": {
+                    "claim_ids": ["practice.coding.surgical-changes", "practice.coding.verify-done"]
+                }
+            },
+        }))
+        before = json.loads(self.catalog.read_text())
+        source = next(
+            item for item in before["practices"] if item["id"] == "practice.coding.surgical-changes"
+        )
+        target = next(
+            item for item in before["practices"] if item["id"] == "practice.coding.verify-done"
+        )
+
+        completed = self.run_state(
+            "merge-practice",
+            str(self.catalog),
+            str(state),
+            "--from-id",
+            source["id"],
+            "--into-id",
+            target["id"],
+            "--merged-on",
+            "2026-08-31",
+            "--reason",
+            "Fixture candidates overlap and the target is canonical.",
+        )
+
+        self.assertIn("merged practice", completed.stdout)
+        after = json.loads(self.catalog.read_text())
+        self.assertNotIn(source["id"], {item["id"] for item in after["practices"]})
+        merged = next(item for item in after["practices"] if item["id"] == target["id"])
+        self.assertTrue(set(source["source_video_ids"]).issubset(merged["source_video_ids"]))
+        self.assertEqual(merged["revisions"][-1]["change"], "merged-duplicate-practice")
+        self.assertEqual(merged["revisions"][-1]["merged_from"]["id"], source["id"])
+        self.assertEqual(merged["revisions"][-1]["merged_from"]["statement"], source["statement"])
+        self.assertEqual(
+            merged["revisions"][-1]["merged_from"]["authoritative_references"],
+            source["authoritative_references"],
+        )
+        record = json.loads(state.read_text())["processed_sources"]["instagram:DUPLICATE"]
+        self.assertEqual(record["claim_ids"], [target["id"]])
+
+    def test_revise_practice_records_before_and_after_definition(self):
+        practice_id = "practice.coding.verify-done"
+        before = next(
+            item for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == practice_id
+        )
+        completed = self.run_state(
+            "revise-practice",
+            str(self.catalog),
+            "--practice-id", practice_id,
+            "--statement", "Define observable completion criteria and verify them.",
+            "--revised-on", "2026-08-31",
+            "--reason", "Narrowed the candidate after duplicate review.",
+        )
+        self.assertIn("revised candidate definition", completed.stdout)
+        after = next(
+            item for item in json.loads(self.catalog.read_text())["practices"]
+            if item["id"] == practice_id
+        )
+        revision = after["revisions"][-1]
+        self.assertEqual(revision["change"], "revised-candidate-definition")
+        self.assertEqual(revision["definition_change"]["before"]["statement"], before["statement"])
+        self.assertEqual(
+            revision["definition_change"]["after"]["statement"],
+            "Define observable completion criteria and verify them.",
+        )
+
+    def test_annotate_merge_validates_ids_and_backfills_reference_snapshot(self):
+        invalid = self.run_state(
+            "annotate-merge",
+            str(self.catalog),
+            "--practice-id", "practice.product.payment-dispute-readiness",
+            "--from-id", "invalid id",
+            "--from-domain", "infrastructure-deployment",
+            "--from-title", "Old title",
+            "--from-statement", "Old statement.",
+            "--from-enforcement-state", "candidate",
+            "--from-applicability", "Payment applications.",
+            "--from-confidence", "HIGH",
+            check=False,
+        )
+        self.assertEqual(invalid.returncode, 2)
+        self.assertIn("--from-id must match", invalid.stderr)
+
+        data = json.loads(self.catalog.read_text())
+        practice = next(
+            item for item in data["practices"]
+            if item["id"] == "practice.product.payment-dispute-readiness"
+        )
+        revision = next(
+            item for item in reversed(practice["revisions"])
+            if item.get("change") == "merged-duplicate-practice"
+        )
+        revision["merged_from"].pop("authoritative_references")
+        self.catalog.write_text(json.dumps(data))
+
+        completed = self.run_state(
+            "annotate-merge",
+            str(self.catalog),
+            "--practice-id", practice["id"],
+            "--from-id", revision["merged_from"]["id"],
+            "--from-domain", revision["merged_from"]["domain"],
+            "--from-title", revision["merged_from"]["title"],
+            "--from-statement", revision["merged_from"]["statement"],
+            "--from-enforcement-state", revision["merged_from"]["enforcement_state"],
+            "--from-applicability", revision["merged_from"]["applicability"]["description"],
+            "--from-confidence", revision["merged_from"]["confidence"],
+            "--from-authoritative-ref",
+            "Fixture source|https://example.com/source|Preserves source reference metadata.",
+        )
+        self.assertIn("annotated merge history", completed.stdout)
+        repaired = json.loads(self.catalog.read_text())
+        repaired_practice = next(
+            item for item in repaired["practices"] if item["id"] == practice["id"]
+        )
+        repaired_revision = next(
+            item for item in reversed(repaired_practice["revisions"])
+            if item.get("change") == "merged-duplicate-practice"
+        )
+        self.assertEqual(
+            repaired_revision["merged_from"]["authoritative_references"][0]["url"],
+            "https://example.com/source",
+        )
 
     def test_promotion_is_separate_and_requires_behavioral_evidence(self):
         self.run_state(
