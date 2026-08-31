@@ -385,6 +385,10 @@ class CurationStateTests(unittest.TestCase):
     def test_state_init_overwrite_and_incremental_recording(self):
         state = Path(self.temp.name) / "state.json"
         self.run_state("init-state", str(state))
+        self.assertEqual(
+            json.loads(state.read_text())["schema_version"],
+            STATE_MODULE.SCHEMA_VERSION,
+        )
         original = state.read_bytes()
         rejected = self.run_state("init-state", str(state), check=False)
         self.assertEqual(rejected.returncode, 2)
@@ -880,6 +884,7 @@ class CurationStateTests(unittest.TestCase):
             "--source-id", source_id,
         )
         payload = json.loads(exported.stdout)
+        self.assertEqual(payload["schema_version"], STATE_MODULE.SCHEMA_VERSION)
         self.assertEqual(payload["state_record"]["creator"], "public-creator")
         self.assertEqual(payload["catalog_references"][0]["practice_id"], practice_id)
 

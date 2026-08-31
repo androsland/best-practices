@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 
 PRACTICE_ID = re.compile(r"^practice\.[a-z0-9.-]+$")
+SCHEMA_VERSION = 1
 CLASSIFICATIONS = {"new", "supporting", "conflicting", "obsolete", "promotional"}
 CONSEQUENTIAL_DOMAINS = frozenset({
     "application-security",
@@ -186,8 +187,8 @@ def total_text_characters(value: object) -> int:
 
 def validate_catalog(data: dict) -> list[str]:
     errors: list[str] = []
-    if data.get("schema_version") != 1:
-        errors.append("schema_version must equal 1")
+    if data.get("schema_version") != SCHEMA_VERSION:
+        errors.append(f"schema_version must equal {SCHEMA_VERSION}")
     practices = data.get("practices")
     if not isinstance(practices, list):
         return errors + ["practices must be an array"]
@@ -320,13 +321,28 @@ def command_init_state(args: argparse.Namespace) -> int:
     if args.state.exists() and not args.force:
         print(f"error: state already exists: {args.state}", file=sys.stderr)
         return 2
-    atomic_write(args.state, {"schema_version": 1, "updated_at": today(), "processed_sources": {}})
+    atomic_write(
+        args.state,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "updated_at": today(),
+            "processed_sources": {},
+        },
+    )
     print(f"initialized state: {args.state}")
     return 0
 
 
 def command_record_source(args: argparse.Namespace) -> int:
-    data = read_json(args.state) if args.state.exists() else {"schema_version": 1, "updated_at": today(), "processed_sources": {}}
+    data = (
+        read_json(args.state)
+        if args.state.exists()
+        else {
+            "schema_version": SCHEMA_VERSION,
+            "updated_at": today(),
+            "processed_sources": {},
+        }
+    )
     records = data.setdefault("processed_sources", {})
     previous = records.get(args.source_id, {})
     records[args.source_id] = {
@@ -388,7 +404,7 @@ def command_export_source(args: argparse.Namespace) -> int:
     if record is None and not references:
         raise ValueError(f"unknown source: {args.source_id}")
     print(json.dumps({
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "exported_at": today(),
         "source_id": args.source_id,
         "state_record": record,
