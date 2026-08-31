@@ -53,6 +53,7 @@ export interface SummaryPolicy {
   maxWorkspaceIdCharacters: number;
   maxInputCharacters: number;
   maxSummaryCharacters: number;
+  maxProviderOutputTokens: number;
   maxRequestsPerMinute: number;
   monthlyBudgetCents: number;
   serviceMonthlyBudgetCents: number;
@@ -68,6 +69,7 @@ export const DEFAULT_SUMMARY_POLICY: Readonly<SummaryPolicy> = Object.freeze({
   maxWorkspaceIdCharacters: 128,
   maxInputCharacters: 12_000,
   maxSummaryCharacters: 500,
+  maxProviderOutputTokens: 300,
   maxRequestsPerMinute: 20,
   monthlyBudgetCents: 2_000,
   serviceMonthlyBudgetCents: 20_000,
@@ -220,7 +222,11 @@ const CORRECTION_INSTRUCTIONS: Record<CorrectionReason, string> = {
 export class AnthropicSummaryProvider implements SummaryProvider {
   private readonly client: Anthropic;
 
-  constructor(apiKey: string | undefined) {
+  constructor(
+    apiKey: string | undefined,
+    private readonly maxOutputTokens =
+      DEFAULT_SUMMARY_POLICY.maxProviderOutputTokens,
+  ) {
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY is required");
     this.client = new Anthropic({ apiKey });
   }
@@ -236,7 +242,7 @@ export class AnthropicSummaryProvider implements SummaryProvider {
     const response = await this.client.messages.create(
       {
         model: SUMMARY_MODEL,
-        max_tokens: 300,
+        max_tokens: this.maxOutputTokens,
         system:
           `[${SUMMARY_PROMPT_VERSION}] Return exactly one JSON object with one string field named summary. ` +
           "Do not include links, executable markup, credentials, or additional fields." +

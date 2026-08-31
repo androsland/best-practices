@@ -29,6 +29,8 @@ VERSION_TIMEOUT_SECONDS = 5.0
 ENUMERATION_TIMEOUT_SECONDS = 120.0
 PROCESS_TERMINATION_GRACE_SECONDS = 2.0
 READ_CHUNK_BYTES = 64 * 1024
+PROCESS_EVENT_QUEUE_CAPACITY = 32
+PROCESS_EVENT_POLL_SECONDS = 0.25
 
 
 class BoundedProcessError(RuntimeError):
@@ -55,7 +57,9 @@ def run_bounded(
 ) -> tuple[int, bytes, bytes]:
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert process.stdout is not None and process.stderr is not None
-    events: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=32)
+    events: queue.Queue[tuple[str, bytes | None]] = queue.Queue(
+        maxsize=PROCESS_EVENT_QUEUE_CAPACITY
+    )
 
     def pump(name: str, stream: Any) -> None:
         try:
@@ -80,7 +84,9 @@ def run_bounded(
                     f"process exceeded the {timeout_seconds:g}-second timeout"
                 )
             try:
-                name, chunk = events.get(timeout=min(remaining, 0.25))
+                name, chunk = events.get(
+                    timeout=min(remaining, PROCESS_EVENT_POLL_SECONDS)
+                )
             except queue.Empty:
                 continue
             if chunk is None:
@@ -169,14 +175,7 @@ def parse_date(value: str) -> str:
         raise argparse.ArgumentTypeError("expected ISO date YYYY-MM-DD") from exc
 
 
-def load_json(path: Path) -> Any:
-    if path.stat().st_size > MAX_OFFLINE_ENUMERATION_BYTES:
-        raise ValueError(
-            f"offline enumeration exceeds {MAX_OFFLINE_ENUMERATION_BYTES} bytes; "
-            "split it into a smaller JSON/JSON-lines batch"
-        )
-    with path.open("r", encoding="utf-8") as handle:
-        text = handle.read()
+def parse_json_or_json_lines(text: str, source: str) -> Any:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -187,8 +186,18 @@ def load_json(path: Path) -> Any:
             try:
                 values.append(json.loads(line))
             except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid JSON on line {number} of {path}") from exc
+                raise ValueError(f"invalid JSON on line {number} of {source}") from exc
         return values
+
+
+def load_json(path: Path) -> Any:
+    if path.stat().st_size > MAX_OFFLINE_ENUMERATION_BYTES:
+        raise ValueError(
+            f"offline enumeration exceeds {MAX_OFFLINE_ENUMERATION_BYTES} bytes; "
+            "split it into a smaller JSON/JSON-lines batch"
+        )
+    with path.open("r", encoding="utf-8") as handle:
+        return parse_json_or_json_lines(handle.read(), str(path))
 
 
 def iter_dicts(value: Any) -> Iterable[dict]:
@@ -330,19 +339,7 @@ def enumerate_raw(args: argparse.Namespace) -> tuple[Any, list[str]]:
         text = stdout.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("gallery-dl output is not valid UTF-8") from exc
-    try:
-        raw: Any = json.loads(text)
-    except json.JSONDecodeError:
-        raw = []
-        for line_number, line in enumerate(text.splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                raw.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"invalid gallery-dl JSON on output line {line_number}"
-                ) from exc
+    raw = parse_json_or_json_lines(text, "gallery-dl output")
     return raw, safe_command(command)
 
 

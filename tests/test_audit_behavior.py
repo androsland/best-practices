@@ -60,14 +60,14 @@ class AuditBehaviorTests(unittest.TestCase):
         ):
             self.assertEqual(findings[check_id]["status"], "PASS", check_id)
 
-    def test_mixed_saas_exposes_failures_without_overclaiming_authz(self):
+    def test_mixed_saas_exposes_security_failures_without_overclaiming_authz(self):
         report = audit("mixed-saas")
         findings = findings_by_id(report)
         self.assertEqual(report["summary"]["verdict"], "NEEDS_WORK")
-        self.assertEqual(findings["DEV-TEST-001"]["status"], "MISSING")
+        self.assertEqual(findings["DEV-TEST-001"]["status"], "PASS")
         self.assertEqual(findings["DEV-DEPS-001"]["status"], "PASS")
         self.assertEqual(findings["SEC-RLS-001"]["status"], "MISSING")
-        self.assertEqual(findings["SEC-WEBHOOK-001"]["status"], "MISSING")
+        self.assertEqual(findings["SEC-WEBHOOK-001"]["status"], "PARTIAL")
         self.assertEqual(findings["TEN-ISO-001"]["status"], "PARTIAL")
         self.assertEqual(findings["SEC-AUTHZ-001"]["status"], "NOT_VERIFIABLE")
 

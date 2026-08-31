@@ -1,17 +1,22 @@
 const express = require("express");
+const {
+  createLoginHandler,
+  createProjectsHandler,
+  createWebhookHandler,
+} = require("./handlers");
 const app = express();
 
-app.post("/login", async (request, response) => response.json({ ok: true }));
+app.use(express.json({ limit: "1mb" }));
 
-app.post("/webhook", async (request, response) => {
-  await fulfillOrder(request.body);
-  response.json({ received: true });
-});
+app.post("/login", createLoginHandler({ authenticate }));
+app.post("/webhook", createWebhookHandler({ fulfillOrder }));
+app.get(
+  "/projects",
+  createProjectsHandler({ findProjects: (query) => db.projects.findMany(query) }),
+);
 
-app.get("/projects", async (request, response) => {
-  const tenant_id = request.query.tenant_id;
-  response.json(await db.projects.findMany({ tenant_id }));
-});
-
+async function authenticate() {
+  return false;
+}
 async function fulfillOrder() {}
 const db = { projects: { findMany: async () => [] } };

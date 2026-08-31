@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   handleStripeWebhook,
+  MAX_WEBHOOK_BODY_CHARACTERS,
   receiveStripeWebhook,
   type StripeWebhookDependencies,
 } from "../src/api/webhooks/stripe";
@@ -198,5 +199,50 @@ describe("webhook", () => {
       body: { error: { code: "invalid_request" } },
     });
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("accepts the exact body limit and rejects an oversized body before effects", async () => {
+    const verify = vi.fn(() => ({ id: "evt_boundary", type: "invoice.paid" }));
+    const insert = vi.fn(async () => "inserted" as const);
+    const publish = vi.fn(async () => undefined);
+    const deps = dependencies({
+      stripe: { webhooks: { constructEvent: verify } },
+      processedEvents: { insert },
+      queue: { publish },
+    });
+
+    await expect(
+      handleStripeWebhook(
+        {
+          method: "POST",
+          rawBody: "x".repeat(MAX_WEBHOOK_BODY_CHARACTERS),
+          signature: "valid",
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({ status: 202 });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(insert).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledOnce();
+
+    verify.mockClear();
+    insert.mockClear();
+    publish.mockClear();
+    await expect(
+      handleStripeWebhook(
+        {
+          method: "POST",
+          rawBody: "x".repeat(MAX_WEBHOOK_BODY_CHARACTERS + 1),
+          signature: "valid",
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: "invalid_request" } },
+    });
+    expect(verify).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
   });
 });

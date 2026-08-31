@@ -205,6 +205,26 @@ else:
                 self.assertEqual(result["selected_count"], 2)
                 self.assertEqual(result["selected"][0]["source_id"], "instagram:LIVE02")
 
+    def test_shared_json_parser_preserves_source_context(self):
+        document = '[{"shortcode": "ONE"}]'
+        lines = '{"shortcode": "ONE"}\n{"shortcode": "TWO"}\n'
+        self.assertEqual(
+            COLLECTOR_MODULE.parse_json_or_json_lines(document, "fixture file"),
+            [{"shortcode": "ONE"}],
+        )
+        self.assertEqual(
+            COLLECTOR_MODULE.parse_json_or_json_lines(lines, "gallery-dl output"),
+            [{"shortcode": "ONE"}, {"shortcode": "TWO"}],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "invalid JSON on line 2 of gallery-dl output",
+        ):
+            COLLECTOR_MODULE.parse_json_or_json_lines(
+                '{"shortcode": "ONE"}\nnot-json\n',
+                "gallery-dl output",
+            )
+
     def test_live_fake_gallery_forwards_consented_browser_args_but_redacts_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             env, args_path = self.fake_gallery_environment(directory, "lines")

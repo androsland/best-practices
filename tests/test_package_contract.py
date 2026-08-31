@@ -51,6 +51,15 @@ class PackageContractTests(unittest.TestCase):
             {"node_modules/esbuild@0.28.2", "node_modules/fsevents@2.3.3"},
         )
 
+        secure_fixture = ROOT / "fixtures/secure-saas"
+        self.assertEqual((secure_fixture / ".npmrc").read_text().strip(), "omit=optional")
+        supply_chain_review = (
+            secure_fixture / "docs/supply-chain-review.md"
+        ).read_text()
+        self.assertIn("@img/sharp-libvips-*", supply_chain_review)
+        self.assertIn("LGPL-3.0-or-later", supply_chain_review)
+        self.assertIn("redistribution of those optional native packages is not approved", supply_chain_review)
+
     def test_security_migrations_encode_safe_rollout_and_rollback(self):
         migrations = ROOT / "fixtures/secure-saas/supabase/migrations"
         workspace_index = (
@@ -90,11 +99,14 @@ class PackageContractTests(unittest.TestCase):
         manifest = json.loads((fixture / "package.json").read_text())
         server = (fixture / "src/server.js").read_text()
         self.assertTrue(manifest["private"])
+        self.assertEqual(manifest["scripts"]["test"], "node --test")
         self.assertNotIn("start", manifest.get("scripts", {}))
         self.assertNotIn(".listen(", server)
         self.assertNotIn("module.exports", server)
 
     def test_root_ci_runs_the_single_validation_entrypoint(self):
+        validation_script = (ROOT / "scripts/validate.sh").read_text()
+        self.assertIn("npm --prefix fixtures/mixed-saas test", validation_script)
         workflow = (ROOT / ".github/workflows/validate.yml").read_text()
         self.assertIn("./scripts/validate.sh", workflow)
         self.assertIn("actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955", workflow)

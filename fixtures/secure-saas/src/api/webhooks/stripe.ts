@@ -33,7 +33,7 @@ export interface StripeWebhookResponse {
     | { error: { code: string; message: string } };
 }
 
-const MAX_WEBHOOK_BODY_CHARACTERS = 1_000_000;
+export const MAX_WEBHOOK_BODY_CHARACTERS = 1_000_000;
 const JSON_HEADERS = Object.freeze({ "content-type": "application/json" });
 
 class WebhookConfigurationError extends Error {}
