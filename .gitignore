@@ -1,0 +1,6 @@
+.project-practices-state.json
+.project-practices-tmp/
+*.media.tmp
+__pycache__/
+*.pyc
+node_modules/

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-practices.local/schema/practices.json",
+  "title": "Project Practices Catalog",
+  "type": "object",
+  "required": ["schema_version", "updated_at", "practices"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "updated_at": {"type": "string", "format": "date"},
+    "practices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "domain", "title", "statement", "enforcement_state",
+          "applicability", "confidence", "source_video_ids",
+          "authoritative_references", "verification_date", "revisions"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^practice\\.[a-z0-9.-]+$"},
+          "domain": {"type": "string", "minLength": 1, "maxLength": 100},
+          "title": {"type": "string", "minLength": 1, "maxLength": 200},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "enforcement_state": {"enum": ["candidate", "advisory", "enforceable"]},
+          "applicability": {
+            "type": "object",
+            "required": ["description", "signals"],
+            "properties": {
+              "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+              "signals": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}}
+            }
+          },
+          "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+          "source_video_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "uniqueItems": true},
+          "authoritative_references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["title", "url", "supports"],
+              "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 300},
+                "url": {"type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048},
+                "supports": {"type": "string", "minLength": 1, "maxLength": 1000}
+              }
+            }
+          },
+          "verification_date": {"type": ["string", "null"], "format": "date"},
+          "revisions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["date", "change", "reason", "source_video_ids", "authoritative_urls"],
+              "properties": {
+                "date": {"type": "string", "format": "date"},
+                "change": {"type": "string"},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "source_video_ids": {"type": "array", "items": {"type": "string"}},
+                "authoritative_urls": {"type": "array", "items": {"type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048}}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

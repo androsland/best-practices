@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-15",
+  "processed_sources": {
+    "instagram:KNOWN002": {
+      "url": "https://www.instagram.com/reel/KNOWN002/",
+      "status": "processed",
+      "processed_at": "2026-08-15",
+      "attempts": 1,
+      "claim_ids": []
+    }
+  }
+}
