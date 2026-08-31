@@ -9,7 +9,7 @@ Audit the requested project without changing it. Detect its stack and product sh
 
 ## Workflow
 
-1. Resolve the target root. Run `python3 scripts/audit_evidence.py <root> --format json` from this skill directory, or use the absolute script path. Treat the output as evidence, not as a substitute for inspecting relevant files.
+1. Resolve the target root. Run `python3 scripts/audit_evidence.py <root> --format json` from this skill directory, or use the absolute script path. Treat the output as evidence, not as a substitute for inspecting relevant files. The script enumerates every rubric check; a `NOT_VERIFIABLE` placeholder means deterministic evidence was insufficient and must not be silently upgraded.
 2. Read [references/stack-detection.md](references/stack-detection.md) and select domain references from `references/domains/` using the detected signals. Always inspect coding/AI workflow and AI-usage domains; mark individual checks `NOT_APPLICABLE` when the project has no relevant surface.
 3. Inspect every evidence path needed to confirm or challenge the deterministic observations. Never infer runtime or production configuration solely from a template, dependency, filename, or absence of a file.
 4. Apply [references/reporting.md](references/reporting.md). Report every selected check as exactly `PASS`, `MISSING`, `PARTIAL`, `NOT_APPLICABLE`, or `NOT_VERIFIABLE`.

@@ -9,6 +9,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "skills/project-practices-audit/scripts/audit_evidence.py"
+EXPECTED_CHECK_IDS = {
+    "DEV-SCOPE-001", "DEV-TEST-001", "DEV-CI-001", "DEV-DEPS-001", "DEV-STATE-001",
+    "SEC-AUTHZ-001", "SEC-SESS-001", "SEC-AUTHN-001", "SEC-RLS-001", "SEC-WEBHOOK-001",
+    "SEC-API-001", "SEC-EDGE-001", "SEC-MOBILE-001", "SEC-SECRETS-001",
+    "REL-RPO-001", "REL-BACKUP-001", "REL-RESTORE-001", "REL-MIGRATE-001", "REL-OBS-001",
+    "TEN-ISO-001", "TEN-EXT-001", "TEN-NOISY-001", "TEN-MIGRATE-001",
+    "INF-DEPLOY-001", "INF-SECRET-001", "INF-NET-001", "INF-PATCH-001", "INF-OBS-001", "INF-TLS-001",
+    "PROD-VALUE-001", "PROD-FLOW-001", "PROD-DISCLOSE-001", "PROD-REENGAGE-001", "PROD-MEASURE-001",
+    "AI-DATA-001", "AI-KEY-001", "AI-OUTPUT-001", "AI-EVAL-001", "AI-SUPPLY-001", "AI-PROMO-001",
+}
 
 
 def tree_digest(root: Path) -> str:
@@ -88,6 +98,9 @@ class AuditBehaviorTests(unittest.TestCase):
             self.assertTrue(required.issubset(item))
             self.assertIn(item["status"], allowed)
             self.assertTrue(item["evidence_paths"])
+        emitted = [item["check_id"] for item in report["findings"]]
+        self.assertEqual(len(emitted), len(set(emitted)))
+        self.assertEqual(set(emitted), EXPECTED_CHECK_IDS)
 
     def test_monorepo_package_scripts_remain_package_scoped(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -203,6 +216,103 @@ class AuditBehaviorTests(unittest.TestCase):
             (fixture / "credential.py").write_text(f'MATERIAL = "{secret}"\n')
             excluded = findings_by_id(audit_path(root))["SEC-SECRETS-001"]
             self.assertEqual(excluded["status"], "PASS")
+
+    def test_secret_detection_requires_literal_credential_material(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "credentials.ts"
+            source.write_text(
+                "const password = crypto.randomUUID()\n"
+                "const token = session.accessToken\n"
+                "const apiKey = process.env.API_KEY\n"
+            )
+            computed = findings_by_id(audit_path(root))["SEC-SECRETS-001"]
+            self.assertEqual(computed["status"], "PASS")
+
+            source.write_text('const apiKey = "sk_live_1234567890abcdef"\n')
+            literal = findings_by_id(audit_path(root))["SEC-SECRETS-001"]
+            self.assertEqual(literal["status"], "MISSING")
+            self.assertEqual(literal["evidence_paths"], ["credentials.ts:1"])
+            self.assertNotIn("sk_live_1234567890abcdef", json.dumps(literal))
+
+            source.unlink()
+            (root / "config.json").write_text(json.dumps({"accessToken": "actual_1234567890abcdef"}))
+            json_literal = findings_by_id(audit_path(root))["SEC-SECRETS-001"]
+            self.assertEqual(json_literal["status"], "MISSING")
+            self.assertEqual(json_literal["evidence_paths"], ["config.json:1"])
+
+    def test_recovery_checks_require_measurable_targets_and_drill_outcomes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / "docs"
+            specs = root / "specs"
+            migrations = root / "migrations"
+            docs.mkdir()
+            specs.mkdir()
+            migrations.mkdir()
+            (migrations / "001.sql").write_text("create table records (id bigint primary key);\n")
+            recovery = docs / "recovery.md"
+            recovery.write_text(
+                "RPO/RTO and restore-test cadence still need to be defined.\n"
+                "Ask the operations owner about the recovery exercise.\n"
+            )
+            (specs / "billing.md").write_text(
+                "Restore procedure: copy the saved promotion snapshot back into the account at expiry.\n"
+            )
+            unresolved = findings_by_id(audit_path(root))
+            self.assertEqual(unresolved["REL-RPO-001"]["status"], "NOT_VERIFIABLE")
+            self.assertEqual(unresolved["REL-RESTORE-001"]["status"], "NOT_VERIFIABLE")
+
+            recovery.write_text(
+                "Critical records have a 15-minute RPO and an RTO of 2 hours.\n"
+                "The restore runbook restores the latest backup into an isolated environment and verifies critical reads.\n"
+                "The most recent recovery exercise completed within the target.\n"
+            )
+            measured = findings_by_id(audit_path(root))
+            self.assertEqual(measured["REL-RPO-001"]["status"], "PASS")
+            self.assertEqual(measured["REL-RESTORE-001"]["status"], "PASS")
+
+    def test_agent_supply_chain_cannot_be_documented_past_a_floating_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "AGENTS.md").write_text(
+                "Record canonical provenance, exact version or commit, license, permissions, and network destinations.\n"
+            )
+            mcp = root / ".mcp.json"
+            mcp.write_text(json.dumps({
+                "mcpServers": {
+                    "database": {
+                        "command": "npx",
+                        "args": ["-y", "@vendor/database-mcp@latest"],
+                    },
+                },
+            }))
+            floating = findings_by_id(audit_path(root))["AI-SUPPLY-001"]
+            self.assertEqual(floating["status"], "PARTIAL")
+            self.assertEqual(floating["confidence"], "HIGH")
+            self.assertIn(".mcp.json", floating["evidence_paths"][0])
+
+            mcp.write_text(json.dumps({
+                "mcpServers": {
+                    "database": {
+                        "command": "pnpm",
+                        "args": ["dlx", "database-mcp"],
+                    },
+                },
+            }))
+            unversioned_dlx = findings_by_id(audit_path(root))["AI-SUPPLY-001"]
+            self.assertEqual(unversioned_dlx["status"], "PARTIAL")
+
+            mcp.write_text(json.dumps({
+                "mcpServers": {
+                    "database": {
+                        "command": "npx",
+                        "args": ["-y", "@vendor/database-mcp@1.2.3"],
+                    },
+                },
+            }))
+            pinned = findings_by_id(audit_path(root))["AI-SUPPLY-001"]
+            self.assertEqual(pinned["status"], "PASS")
 
 
 if __name__ == "__main__":

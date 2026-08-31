@@ -43,6 +43,60 @@ FIXTURE_ARTIFACT_TYPE = "static-analyzer-virtual-project"
 
 
 @dataclass(frozen=True)
+class RubricCheck:
+    check_id: str
+    domain: str
+    severity: str
+    required_surfaces: tuple[str, ...]
+    unavailable_rationale: str
+    remediation: str | None
+
+
+RUBRIC_CHECKS = (
+    RubricCheck("DEV-SCOPE-001", "coding-ai", "MEDIUM", ("agent_extensions",), "Agent-instruction scope and consequential-action boundaries require review.", "Define project scope, verification expectations, and approval boundaries for consequential actions."),
+    RubricCheck("DEV-TEST-001", "coding-ai", "HIGH", ("code",), "Test coverage requires project-specific inspection.", "Add representative automated tests and a repeatable test command."),
+    RubricCheck("DEV-CI-001", "coding-ai", "MEDIUM", ("code",), "CI validation requires project-specific inspection.", "Run applicable validation in CI or document the external gate."),
+    RubricCheck("DEV-DEPS-001", "coding-ai", "MEDIUM", (), "Dependency reproducibility requires manifest inspection.", "Commit the ecosystem's supported lock or checksum file."),
+    RubricCheck("DEV-STATE-001", "coding-ai", "LOW", ("agent_extensions",), "Persistent agent-state and acceptance criteria require workflow review.", "Document concise state and acceptance criteria for long-running agent work when applicable."),
+    RubricCheck("SEC-AUTHZ-001", "application-security", "CRITICAL", ("network_service", "authentication"), "Authorization correctness requires route and data-flow inspection.", "Authorize protected objects server-side and add negative cross-user tests."),
+    RubricCheck("SEC-SESS-001", "application-security", "HIGH", ("authentication",), "Session storage and runtime cookie attributes cannot be established from generic static signals.", "Verify expiring sessions and secure, HttpOnly, SameSite cookie or platform-storage behavior."),
+    RubricCheck("SEC-AUTHN-001", "application-security", "HIGH", ("network_service", "authentication"), "Authentication abuse controls and recovery behavior require endpoint and provider review.", "Add server-side abuse controls and safe account-recovery tests."),
+    RubricCheck("SEC-RLS-001", "application-security", "CRITICAL", ("supabase",), "Supabase RLS and grant coverage require migration and role-test inspection.", "Enable and test least-privilege RLS and grants for every exposed table."),
+    RubricCheck("SEC-WEBHOOK-001", "application-security", "CRITICAL", ("webhooks",), "Webhook authenticity and retry behavior require handler inspection.", "Verify raw-body signatures before effects and make repeated delivery safe."),
+    RubricCheck("SEC-API-001", "application-security", "HIGH", ("network_service",), "API authentication, validation, authorization, and resource bounds require route inspection.", "Review public API boundaries and add negative and resource-limit tests."),
+    RubricCheck("SEC-EDGE-001", "application-security", "MEDIUM", ("network_service", "infrastructure_deployment"), "Deployed edge and origin exposure are not established by repository heuristics.", "Document the deployed origin and edge threat model and its controls."),
+    RubricCheck("SEC-MOBILE-001", "application-security", "HIGH", ("mobile",), "Native storage, deep links, and OAuth behavior require platform-specific inspection.", "Review platform secret storage, deep links, and OAuth PKCE where applicable."),
+    RubricCheck("SEC-SECRETS-001", "application-security", "CRITICAL", (), "Committed-secret safety requires bounded repository scanning.", "Remove and rotate committed credentials and use secret injection."),
+    RubricCheck("REL-RPO-001", "data-reliability", "HIGH", ("durable_data",), "Owned, measurable recovery objectives were not established.", "Document owned RPO and RTO time targets for critical durable data."),
+    RubricCheck("REL-BACKUP-001", "data-reliability", "CRITICAL", ("durable_data",), "Backup isolation and PITR configuration commonly live outside the repository.", "Verify backup or PITR configuration against the stated RPO and isolate it from the primary failure domain."),
+    RubricCheck("REL-RESTORE-001", "data-reliability", "HIGH", ("durable_data",), "Timed restoration evidence was not established.", "Run and record an isolated restore drill against the stated RTO."),
+    RubricCheck("REL-MIGRATE-001", "data-reliability", "HIGH", ("durable_data",), "Migration retry safety and representative validation require migration inspection.", "Exercise reviewable migrations in CI or staging and document retry and rollback behavior."),
+    RubricCheck("REL-OBS-001", "data-reliability", "HIGH", ("durable_data",), "Critical data-path and recovery alerting may be provider-owned.", "Verify alerts for backup, archive, queue, and critical data-path failures."),
+    RubricCheck("TEN-ISO-001", "multitenancy", "CRITICAL", ("multitenant",), "Tenant enforcement and negative isolation tests require data-boundary inspection.", "Centralize tenant scoping and add negative cross-tenant read and write tests."),
+    RubricCheck("TEN-EXT-001", "multitenancy", "MEDIUM", ("multitenant",), "Tenant-specific extension behavior requires schema and lifecycle inspection.", "Validate custom tenant attributes across limits, indexes, migrations, exports, and deletion."),
+    RubricCheck("TEN-NOISY-001", "multitenancy", "HIGH", ("multitenant",), "Per-tenant resource boundaries require workload and runtime inspection.", "Bound and observe expensive shared work per tenant where applicable."),
+    RubricCheck("TEN-MIGRATE-001", "multitenancy", "HIGH", ("multitenant",), "Fleet or per-tenant migration behavior requires direct implementation evidence.", "Make applicable tenant migrations resumable, observable, retry-safe, and rolling-deploy compatible."),
+    RubricCheck("INF-DEPLOY-001", "infrastructure-deployment", "HIGH", ("infrastructure_deployment",), "Deployment and rollback evidence require pipeline inspection.", "Document and test deployment and return to a known-good release."),
+    RubricCheck("INF-SECRET-001", "infrastructure-deployment", "CRITICAL", ("infrastructure_deployment",), "Runtime secret injection and rotation are commonly provider-owned.", "Verify runtime secret injection, ownership, and rotation without committing values."),
+    RubricCheck("INF-NET-001", "infrastructure-deployment", "HIGH", ("infrastructure_deployment",), "Deployed network exposure cannot be established from generic static signals.", "Restrict public exposure to required services and protect stateful and administrative surfaces."),
+    RubricCheck("INF-PATCH-001", "infrastructure-deployment", "HIGH", ("infrastructure_deployment",), "Runtime and host update strategy requires deployment-specific inspection.", "Document maintained runtime or image replacement and host patch ownership."),
+    RubricCheck("INF-OBS-001", "infrastructure-deployment", "HIGH", ("infrastructure_deployment",), "Production service telemetry and alerts may live outside the repository.", "Verify logs, metrics, and alerts for availability, capacity, authentication, and critical health."),
+    RubricCheck("INF-TLS-001", "infrastructure-deployment", "HIGH", ("network_service", "infrastructure_deployment"), "TLS termination and renewal ownership may be provider-managed.", "Verify public TLS termination and renewal ownership."),
+    RubricCheck("PROD-VALUE-001", "product-onboarding", "MEDIUM", ("end_user_product",), "Meaningful first value may be defined in external product analytics.", "Name and instrument a meaningful first-value event."),
+    RubricCheck("PROD-FLOW-001", "product-onboarding", "LOW", ("end_user_product",), "Core-action onboarding flow requires direct route and UI inspection.", "Remove unnecessary blockers before the user's core action."),
+    RubricCheck("PROD-DISCLOSE-001", "product-onboarding", "LOW", ("end_user_product",), "Progressive disclosure requires qualitative UI inspection.", "Keep essential capability visible while deferring advanced complexity."),
+    RubricCheck("PROD-REENGAGE-001", "product-onboarding", "MEDIUM", ("end_user_product",), "Lifecycle re-engagement triggers and consent controls require product-flow inspection.", "Tie re-engagement to created value and respect preferences, time zones, and data minimization."),
+    RubricCheck("PROD-MEASURE-001", "product-onboarding", "LOW", ("end_user_product",), "Onboarding and retained-use measurement may live outside the repository.", "Distinguish first value from retained use in product measurement."),
+    RubricCheck("AI-DATA-001", "ai-usage", "HIGH", ("ai_usage",), "AI data destinations and handling require provider and product-flow inspection.", "Document providers, sensitive inputs, retention, training settings, and disclosure or consent."),
+    RubricCheck("AI-KEY-001", "ai-usage", "CRITICAL", ("ai_usage",), "AI credential scope and rotation require configuration inspection.", "Keep provider credentials server-side, scoped, injected, and rotatable."),
+    RubricCheck("AI-OUTPUT-001", "ai-usage", "HIGH", ("ai_usage",), "Consequential AI output boundaries require call-site inspection.", "Validate and bound model output before consequential side effects, with review and idempotency where needed."),
+    RubricCheck("AI-EVAL-001", "ai-usage", "MEDIUM", ("ai_usage",), "Product-critical AI evaluation coverage requires executable behavior inspection.", "Add representative, versioned regression evaluations for product-critical AI behavior."),
+    RubricCheck("AI-SUPPLY-001", "ai-usage", "HIGH", ("agent_extensions",), "Agent-extension provenance, pinning, and permissions require configuration inspection.", "Pin external extensions and document sources, permissions, network destinations, ownership, and removal."),
+    RubricCheck("AI-PROMO-001", "ai-usage", "INFO", (), "Promotional claims require independent reproduction.", None),
+)
+
+
+@dataclass(frozen=True)
 class TextFile:
     path: Path
     rel: str
@@ -161,7 +215,8 @@ class Repository:
     def grep(self, patterns: Sequence[str], *, paths: Iterable[TextFile] | None = None, limit: int = 12) -> list[str]:
         compiled = [re.compile(pattern, re.I) for pattern in patterns]
         matches: list[str] = []
-        for item in paths or self.text_files:
+        source = self.text_files if paths is None else paths
+        for item in source:
             for line_no, line in enumerate(item.lines, 1):
                 if any(pattern.search(line) for pattern in compiled):
                     matches.append(f"{item.rel}:{line_no}")
@@ -181,6 +236,168 @@ class Repository:
             in MANIFEST_NAMES | {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
         )
         return manifests[:3] or ["."]
+
+
+AGENT_INSTRUCTION_PATH_RE = re.compile(
+    r"(^|/)(\.claude|\.codex|\.agents)(/|$)|"
+    r"(^|/)(SKILL\.md|CLAUDE\.md|AGENTS\.md)$",
+    re.I,
+)
+EXTENSION_PATH_RE = re.compile(
+    r"(^|/)(\.mcp\.json|SKILL\.md|CLAUDE\.md|AGENTS\.md|"
+    r"\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json|"
+    r"\.claude/settings[^/]*\.json)$",
+    re.I,
+)
+TIME_TARGET = r"\d+(?:\.\d+)?\s*[- ]?\s*(?:ms|milliseconds?|s|seconds?|m|minutes?|h|hours?|d|days?)"
+RUNNER_COMMANDS = {"npx", "pnpx", "bunx", "uvx", "pipx"}
+RUNNER_VALUE_OPTIONS = {
+    "-c", "--call", "--cache", "--package", "-p", "--python", "--from",
+}
+
+
+def operational_text_files(repo: Repository) -> list[TextFile]:
+    """Exclude agent instruction libraries when looking for product operations evidence."""
+    return [item for item in repo.text_files if not AGENT_INSTRUCTION_PATH_RE.search(item.rel)]
+
+
+def first_line_containing(item: TextFile, value: str) -> str:
+    for line_no, line in enumerate(item.lines, 1):
+        if value in line:
+            return f"{item.rel}:{line_no}"
+    return item.rel
+
+
+def is_placeholder_secret(value: str) -> bool:
+    normalized = value.lower().strip()
+    placeholders = (
+        "changeme", "change-me", "dummy", "example", "fake", "fixture",
+        "placeholder", "replace-me", "replace_me", "sample", "test",
+        "your-", "your_",
+    )
+    return normalized and (
+        all(character == "x" for character in normalized)
+        or any(
+            normalized == marker
+            or normalized.startswith(f"{marker}-")
+            or normalized.startswith(f"{marker}_")
+            for marker in placeholders
+        )
+    )
+
+
+def exact_runner_package_pin(token: str) -> bool:
+    """Accept immutable npm-style versions or full Git commit references."""
+    if re.search(r"#[0-9a-f]{40,64}$", token, re.I):
+        return True
+    python_pin = re.search(r"==(?P<version>\d+\.\d+\.\d+(?:[0-9A-Za-z.-]+)?)$", token)
+    if python_pin:
+        return True
+    if token.startswith("@"):
+        separator = token.rfind("@")
+        if separator <= 0:
+            return False
+        version = token[separator + 1:]
+    else:
+        if "@" not in token:
+            return False
+        version = token.rsplit("@", 1)[1]
+    return bool(re.fullmatch(r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version))
+
+
+def runner_package(args: Sequence[str]) -> str | None:
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            return None
+        if arg in RUNNER_VALUE_OPTIONS:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return None
+
+
+def external_runner_packages(command: str, args: Sequence[str]) -> list[str]:
+    tokens = [command, *args]
+    packages: list[str] = []
+    for index, token in enumerate(tokens):
+        executable = Path(token).name
+        tail = tokens[index + 1:]
+        if executable in RUNNER_COMMANDS:
+            explicit: list[str] = []
+            for option_index, option in enumerate(tail):
+                if option.startswith("--package="):
+                    explicit.append(option.split("=", 1)[1])
+                elif option in {"--package", "-p", "--from"} and option_index + 1 < len(tail):
+                    explicit.append(tail[option_index + 1])
+            if explicit:
+                packages.extend(explicit)
+            else:
+                package = runner_package(tail)
+                if executable == "pipx" and package == "run":
+                    package = runner_package(tail[tail.index("run") + 1:])
+                if package:
+                    packages.append(package)
+        elif executable in {"pnpm", "yarn"}:
+            subcommand = runner_package(tail)
+            if subcommand == "dlx":
+                dlx_index = tail.index("dlx")
+                package = runner_package(tail[dlx_index + 1:])
+                if package:
+                    packages.append(package)
+        elif executable == "npm":
+            subcommand = runner_package(tail)
+            if subcommand in {"exec", "x"}:
+                exec_index = tail.index(subcommand)
+                exec_tail = tail[exec_index + 1:]
+                explicit = [
+                    option.split("=", 1)[1]
+                    for option in exec_tail
+                    if option.startswith("--package=")
+                ]
+                for option_index, option in enumerate(exec_tail):
+                    if option in {"--package", "-p"} and option_index + 1 < len(exec_tail):
+                        explicit.append(exec_tail[option_index + 1])
+                if explicit:
+                    packages.extend(explicit)
+                else:
+                    package = runner_package(exec_tail)
+                    if package is None and "--" in exec_tail:
+                        package = runner_package(exec_tail[exec_tail.index("--") + 1:])
+                    if package:
+                        packages.append(package)
+    return list(dict.fromkeys(packages))
+
+
+def unpinned_mcp_evidence(repo: Repository) -> list[str]:
+    evidence: list[str] = []
+    for item in repo.text_files:
+        if Path(item.rel).name != ".mcp.json":
+            continue
+        try:
+            document = json.loads(item.text)
+        except json.JSONDecodeError:
+            continue
+        servers = document.get("mcpServers", {}) if isinstance(document, dict) else {}
+        if not isinstance(servers, dict):
+            continue
+        for server in servers.values():
+            if not isinstance(server, dict):
+                continue
+            command = server.get("command")
+            args = server.get("args", [])
+            if not isinstance(command, str) or not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                continue
+            for package in external_runner_packages(command, args):
+                if not exact_runner_package_pin(package):
+                    evidence.append(first_line_containing(item, package))
+                    break
+    return sorted(set(evidence))
 
 
 def package_contexts(repo: Repository) -> list[PackageContext]:
@@ -329,12 +546,22 @@ def collect_security_findings(repo: Repository, stack: dict) -> list[dict]:
     results: list[dict] = []
     secret_evidence: list[str] = []
     private_key_re = re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
-    assignment_re = re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"]?(?!\$\{|process\.env|os\.environ|env\.|<|example|changeme|test|dummy)[A-Za-z0-9_./+=-]{16,}")
+    assignment_re = re.compile(
+        r"(?i)['\"]?\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|secret|token|password)\b['\"]?"
+        r"\s*[:=]\s*(?P<quote>['\"])(?P<value>[A-Za-z0-9_./+=:@-]{16,})(?P=quote)"
+    )
+    env_assignment_re = re.compile(
+        r"(?i)^\s*(?:[A-Z0-9_]*(?:API_KEY|CLIENT_SECRET|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|TOKEN))"
+        r"\s*=\s*(?P<value>[A-Za-z0-9_./+=:@-]{16,})\s*(?:#.*)?$"
+    )
     for item in repo.text_files:
         if Path(item.rel).name.endswith((".example", ".sample")) or "/fixtures/" in f"/{item.rel}/":
             continue
         for line_no, line in enumerate(item.lines, 1):
-            if private_key_re.search(line) or assignment_re.search(line):
+            literal = assignment_re.search(line)
+            env_literal = env_assignment_re.search(line) if Path(item.rel).suffix.lower() in {".env", ".conf", ".properties"} else None
+            value = literal.group("value") if literal else env_literal.group("value") if env_literal else None
+            if private_key_re.search(line) or (value is not None and not is_placeholder_secret(value)):
                 secret_evidence.append(f"{item.rel}:{line_no}")
                 break
     if secret_evidence:
@@ -379,14 +606,50 @@ def collect_reliability_findings(repo: Repository, stack: dict) -> list[dict]:
             finding("REL-RESTORE-001", "data-reliability", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No durable data surface was detected.", None),
         ])
     else:
-        rpo_rto = repo.grep([r"\bRPO\b", r"\bRTO\b"])
-        restore = repo.grep([r"\brestore\b", r"recovery drill", r"restore test"])
-        results.append(finding("REL-RPO-001", "data-reliability", "PASS" if rpo_rto else "NOT_VERIFIABLE", "HIGH", "MEDIUM", rpo_rto or context + ["(searched for RPO/RTO)"], "Repository recovery objectives were found." if rpo_rto else "Recovery objectives may be maintained outside the repository.", None if rpo_rto else "Document owned RPO/RTO targets and link backup/retention design to them."))
-        if restore:
-            drill = repo.grep([r"restore (test|drill)", r"measured.*RTO", r"recovery exercise"])
-            results.append(finding("REL-RESTORE-001", "data-reliability", "PASS" if drill else "PARTIAL", "HIGH", "MEDIUM", restore + drill, "Restore guidance exists" + (" with drill evidence." if drill else " but no clear timed drill evidence."), None if drill else "Run an isolated restore drill, verify critical paths, measure against RTO, and record the result."))
+        operational = operational_text_files(repo)
+        rpo = repo.grep([
+            rf"\bRPO\b.{{0,32}}(?:is|of|target|objective|[:=]|<=?|≤)\s*{TIME_TARGET}\b",
+            rf"\b{TIME_TARGET}\s+(?:maximum\s+)?RPO\b",
+            rf"\brecovery point objective\b.{{0,32}}(?:is|of|target|[:=]|<=?|≤)\s*{TIME_TARGET}\b",
+        ], paths=operational)
+        rto = repo.grep([
+            rf"\bRTO\b.{{0,32}}(?:is|of|target|objective|[:=]|<=?|≤)\s*{TIME_TARGET}\b",
+            rf"\b{TIME_TARGET}\s+(?:maximum\s+)?RTO\b",
+            rf"\brecovery time objective\b.{{0,32}}(?:is|of|target|[:=]|<=?|≤)\s*{TIME_TARGET}\b",
+        ], paths=operational)
+        objective_mentions = repo.grep([r"\bRPO\b", r"\bRTO\b", r"recovery (point|time) objective"], paths=operational)
+        if rpo and rto:
+            results.append(finding("REL-RPO-001", "data-reliability", "PASS", "HIGH", "HIGH", sorted(set(rpo + rto)), "Explicit RPO and RTO time targets were found.", None))
+        elif rpo or rto:
+            results.append(finding("REL-RPO-001", "data-reliability", "PARTIAL", "HIGH", "HIGH", sorted(set(rpo + rto)), "Only one measurable recovery objective was found.", "Document both owned RPO and RTO time targets for critical durable data."))
         else:
-            results.append(finding("REL-RESTORE-001", "data-reliability", "NOT_VERIFIABLE", "HIGH", "MEDIUM", context + ["(searched for restore/runbook/drill evidence)"], "No repository restore evidence was found; recovery records may be external.", "Link or add the restore runbook and recent drill evidence without exposing sensitive operational values."))
+            results.append(finding("REL-RPO-001", "data-reliability", "NOT_VERIFIABLE", "HIGH", "MEDIUM", objective_mentions or context + ["(searched for measurable RPO/RTO time targets)"], "Recovery-objective terminology was found without measurable targets." if objective_mentions else "Recovery objectives may be maintained outside the repository.", "Document owned RPO and RTO time targets and link backup and recovery design to them."))
+
+        recovery_docs = [
+            item for item in operational
+            if re.search(r"(^|/)(?:[^/]*(?:recovery|restore|backup|runbook|disaster)[^/]*)\.(?:md|txt|ya?ml|json|toml|sh|py)$", item.rel, re.I)
+        ]
+        restore_guidance = repo.grep([
+            r"\brestore (?:runbook|procedure|steps?|command|workflow)\b",
+            r"\brecovery (?:runbook|procedure)\b",
+        ], paths=recovery_docs)
+        restore_guidance += repo.grep([
+            r"\brestore\b.{0,100}\b(?:into (?:an )?isolated|from (?:the )?(?:backup|snapshot)|verify|validation|critical (?:read|write|path))\b",
+            r"\brecovery (?:runbook|procedure)\b",
+        ], paths=operational)
+        restore_guidance = sorted(set(restore_guidance))
+        drill = repo.grep([
+            r"\b(?:restore drill|restore test|recovery exercise)\b.{0,120}\b(?:completed|passed|failed|measured|within (?:the )?target)\b",
+            r"\b(?:last|most recent)\b.{0,80}\b(?:restore drill|restore test|recovery exercise)\b",
+            rf"\bmeasured RTO\b.{{0,24}}(?:[:=]|was|of)\s*{TIME_TARGET}\b",
+        ], paths=operational)
+        restore_mentions = repo.grep([r"\brestore\b", r"recovery (?:drill|exercise)"], paths=operational)
+        if restore_guidance and drill:
+            results.append(finding("REL-RESTORE-001", "data-reliability", "PASS", "HIGH", "HIGH", sorted(set(restore_guidance + drill)), "A restore procedure and completed or measured drill evidence were found.", None))
+        elif restore_guidance:
+            results.append(finding("REL-RESTORE-001", "data-reliability", "PARTIAL", "HIGH", "MEDIUM", restore_guidance, "Restore guidance exists but no completed or measured drill evidence was found.", "Run an isolated restore drill, verify critical paths, measure against RTO, and record the result."))
+        else:
+            results.append(finding("REL-RESTORE-001", "data-reliability", "NOT_VERIFIABLE", "HIGH", "MEDIUM", restore_mentions or context + ["(searched for restore procedure and completed drill evidence)"], "Restore terminology was found without a recognizable procedure or completed drill." if restore_mentions else "No repository restore evidence was found; recovery records may be external.", "Link or add the restore runbook and recent drill evidence without exposing sensitive operational values."))
     test_paths = repo.paths_matching(TEST_RE)
     if not surfaces["multitenant"]:
         results.append(finding("TEN-ISO-001", "multitenancy", "NOT_APPLICABLE", "CRITICAL", "HIGH", context, "No direct tenant/workspace/organization data-model signal was detected.", None))
@@ -414,9 +677,17 @@ def collect_product_ai_findings(repo: Repository, stack: dict) -> list[dict]:
     if not surfaces["agent_extensions"]:
         results.append(finding("AI-SUPPLY-001", "ai-usage", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No agent extension, skill, MCP, or plugin surface was detected.", None))
     else:
-        paths = [r for r in repo.relatives() if re.search(r"(SKILL\.md|CLAUDE\.md|AGENTS\.md|\.mcp\.json|\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json)$", r)]
-        provenance = repo.grep([r"\b(version|commit|sha256|license|permission|network|provenance)\b"], paths=(i for i in repo.text_files if i.rel in paths))
-        results.append(finding("AI-SUPPLY-001", "ai-usage", "PASS" if provenance else "PARTIAL", "HIGH", "MEDIUM", (provenance or paths)[:10], "Agent-extension configuration was found" + (" with provenance/permission review signals." if provenance else " without recognizable pinning or permission/provenance guidance."), None if provenance else "Document canonical sources, versions, permissions, network destinations, review ownership, and removal for external extensions."))
+        paths = [r for r in repo.relatives() if EXTENSION_PATH_RE.search(r)]
+        extension_files = [item for item in repo.text_files if item.rel in paths]
+        provenance = repo.grep([r"\b(version|commit|sha(?:256)?|license|provenance|canonical source)\b"], paths=extension_files)
+        permissions = repo.grep([r"\b(permission|allowed tools?|network destinations?|sandbox|read[- ]only)\b"], paths=extension_files)
+        unpinned = unpinned_mcp_evidence(repo)
+        if unpinned:
+            results.append(finding("AI-SUPPLY-001", "ai-usage", "PARTIAL", "HIGH", "HIGH", unpinned[:10], "At least one externally executed MCP package is not pinned to an immutable version or commit.", "Pin every runner-installed MCP package to an exact version or full commit, then document permissions, network destinations, review ownership, and removal."))
+        elif provenance and permissions:
+            results.append(finding("AI-SUPPLY-001", "ai-usage", "PASS", "HIGH", "MEDIUM", sorted(set(provenance + permissions))[:10], "Agent-extension configuration has recognizable provenance and permission-review signals, with no floating MCP runner package detected.", None))
+        else:
+            results.append(finding("AI-SUPPLY-001", "ai-usage", "PARTIAL", "HIGH", "MEDIUM", (provenance + permissions or paths)[:10], "Agent-extension configuration lacks complete provenance and permission-review evidence.", "Document canonical sources, exact versions or commits, permissions, network destinations, review ownership, and removal for external extensions."))
     if not surfaces["ai_usage"]:
         results.append(finding("AI-DATA-001", "ai-usage", "NOT_APPLICABLE", "HIGH", "HIGH", context, "No product or workflow AI-provider surface was detected.", None))
     else:
@@ -424,6 +695,57 @@ def collect_product_ai_findings(repo: Repository, stack: dict) -> list[dict]:
         results.append(finding("AI-DATA-001", "ai-usage", "PASS" if dataflow else "PARTIAL", "HIGH", "MEDIUM", dataflow or context, "AI usage was found" + (" with data-flow/privacy documentation signals." if dataflow else " without recognizable data-flow, retention, or sensitive-input documentation."), None if dataflow else "Document provider destinations, sensitive inputs, retention/training settings, user disclosure/consent, and local-versus-upload behavior."))
     promo = repo.grep([r"\b(10x|11x|best model|top[- ]level|unlimited|\$[0-9,]+.*(month|website)|one line of code)\b"])
     results.append(finding("AI-PROMO-001", "ai-usage", "NOT_VERIFIABLE" if promo else "NOT_APPLICABLE", "INFO", "HIGH" if promo else "MEDIUM", promo or context, "Promotional or subjective claims are advisory and excluded from the audit verdict." if promo else "No tracked promotional-claim signal was detected.", "Verify any material claim against a reproducible baseline before relying on it." if promo else None, advisory=True))
+    return results
+
+
+def complete_rubric_coverage(repo: Repository, stack: dict, analyzed: Sequence[dict]) -> list[dict]:
+    by_id: dict[str, dict] = {}
+    for item in analyzed:
+        check_id = item["check_id"]
+        if check_id in by_id:
+            raise RuntimeError(f"duplicate analyzer finding: {check_id}")
+        by_id[check_id] = item
+
+    known_ids = {check.check_id for check in RUBRIC_CHECKS}
+    unexpected = sorted(set(by_id) - known_ids)
+    if unexpected:
+        raise RuntimeError(f"analyzer emitted unknown rubric checks: {', '.join(unexpected)}")
+
+    results: list[dict] = []
+    surfaces = stack["surfaces"]
+    context = repo.nearest_context()
+    for check in RUBRIC_CHECKS:
+        if check.check_id in by_id:
+            results.append(by_id[check.check_id])
+            continue
+        applicable = all(surfaces.get(surface, False) for surface in check.required_surfaces)
+        if not applicable:
+            missing_surfaces = ", ".join(
+                surface for surface in check.required_surfaces if not surfaces.get(surface, False)
+            )
+            results.append(finding(
+                check.check_id,
+                check.domain,
+                "NOT_APPLICABLE",
+                check.severity,
+                "HIGH",
+                context,
+                f"Required project surface was not detected: {missing_surfaces}.",
+                None,
+                advisory=check.check_id == "AI-PROMO-001",
+            ))
+            continue
+        results.append(finding(
+            check.check_id,
+            check.domain,
+            "NOT_VERIFIABLE",
+            check.severity,
+            "MEDIUM",
+            context + ["(no sufficient deterministic evidence; agent inspection required)"],
+            check.unavailable_rationale,
+            check.remediation,
+            advisory=check.check_id == "AI-PROMO-001",
+        ))
     return results
 
 
@@ -436,7 +758,7 @@ def collect_findings(repo: Repository, stack: dict) -> list[dict]:
         collect_product_ai_findings,
     ):
         results.extend(collector(repo, stack))
-    return results
+    return complete_rubric_coverage(repo, stack, results)
 
 
 def render_text(report: dict) -> str:
