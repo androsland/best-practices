@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://project-practices.local/schema/practices.json",
-  "title": "Project Practices Catalog",
+  "$id": "https://best-practices.local/schema/practices.json",
+  "title": "Best Practices Catalog",
   "type": "object",
   "required": ["schema_version", "updated_at", "practices"],
   "properties": {

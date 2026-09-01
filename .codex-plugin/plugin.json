@@ -1,9 +1,9 @@
 {
-  "name": "project-practices",
-  "version": "0.1.1",
-  "description": "Evidence-backed whole-project practices audits and video-derived practice curation.",
+  "name": "best-practices",
+  "version": "0.2.0",
+  "description": "Knowledge-driven, multi-agent whole-project reviews and provenance-preserving practice curation.",
   "author": {
-    "name": "Project Practices maintainers"
+    "name": "Best Practices maintainers"
   },
   "license": "MIT",
   "keywords": [
@@ -15,18 +15,20 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Project Practices",
-    "shortDescription": "Audit and curate engineering practices.",
-    "longDescription": "Read-only, stack-aware project audits plus provenance-preserving curation of practices extracted from videos.",
-    "developerName": "Project Practices maintainers",
+    "displayName": "Best Practices",
+    "shortDescription": "Learn and review engineering practices.",
+    "longDescription": "Ingest video-derived knowledge, curate a versioned practice catalog, and run contextual multi-agent whole-project reviews.",
+    "developerName": "Best Practices maintainers",
     "category": "Developer Tools",
     "capabilities": [
-      "Read-only audits",
-      "Video knowledge curation"
+      "Contextual multi-agent reviews",
+      "Video knowledge ingestion",
+      "Versioned practice catalog"
     ],
     "defaultPrompt": [
-      "Audit this project's engineering practices.",
-      "Curate practices from these video URLs."
+      "Compare this project with the practice catalog.",
+      "Ingest practices from this video.",
+      "Summarize the current knowledge catalog."
     ]
   }
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Best Practices Audit"
+  short_description: "Run contextual whole-project practice reviews"
+  default_prompt: "Use $best-practices-audit to compare this repository against the full practice catalog."

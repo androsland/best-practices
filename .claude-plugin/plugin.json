@@ -1,10 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "project-practices",
-  "version": "0.1.1",
-  "description": "Evidence-backed whole-project practices audits and video-derived practice curation.",
+  "name": "best-practices",
+  "version": "0.2.0",
+  "description": "Knowledge-driven, multi-agent whole-project reviews and provenance-preserving practice curation.",
   "author": {
-    "name": "Project Practices maintainers"
+    "name": "Best Practices maintainers"
   },
   "license": "MIT",
   "keywords": [

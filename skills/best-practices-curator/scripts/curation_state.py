@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and update project-practices provenance and ingestion state."""
+"""Validate and update best-practices provenance and ingestion state."""
 
 from __future__ import annotations
 

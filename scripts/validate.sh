@@ -6,5 +6,6 @@ cd "$repo_root"
 
 python3 -m unittest discover -s tests -v
 python3 -m pytest fixtures/minimal-cli/tests
-python3 skills/project-practices-audit/scripts/audit_evidence.py fixtures/secure-saas --format json >/dev/null
-python3 skills/project-practices-curator/scripts/curation_state.py validate knowledge/practices.json
+python3 skills/best-practices-audit/scripts/repository_inventory.py fixtures/secure-saas --format json >/dev/null
+python3 skills/best-practices-catalog/scripts/catalog_query.py knowledge/practices.json summary >/dev/null
+python3 skills/best-practices-curator/scripts/curation_state.py validate knowledge/practices.json

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Best Practices Catalog"
+  short_description: "Inspect practice knowledge and provenance"
+  default_prompt: "Use $best-practices-catalog to summarize the knowledge catalog and its coverage."
