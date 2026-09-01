@@ -1,0 +1,4 @@
+interface:
+  display_name: "Best Practices Ingest"
+  short_description: "Ingest video knowledge with provenance"
+  default_prompt: "Use $best-practices-ingest to extract reviewable practices from this video source."

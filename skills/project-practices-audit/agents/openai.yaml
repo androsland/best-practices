@@ -1,4 +1,0 @@
-interface:
-  display_name: "Project Practices Audit"
-  short_description: "Audit whole-project engineering practices"
-  default_prompt: "Use $project-practices-audit to audit this project and report evidence-backed findings."

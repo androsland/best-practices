@@ -14,20 +14,32 @@ class PackageContractTests(unittest.TestCase):
     def test_manifests_share_name_and_version(self):
         codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
         claude = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
-        self.assertEqual(codex["name"], "project-practices")
+        self.assertEqual(codex["name"], "best-practices")
         self.assertEqual(codex["name"], claude["name"])
         self.assertEqual(codex["version"], claude["version"])
         self.assertEqual(codex["skills"], "./skills/")
         self.assertEqual(claude["skills"], "./skills/")
 
     def test_skills_have_no_scaffold_placeholders_and_references_resolve(self):
-        for skill_name in ("project-practices-audit", "project-practices-curator"):
+        for skill_name in (
+            "best-practices-audit",
+            "best-practices-catalog",
+            "best-practices-curator",
+            "best-practices-ingest",
+        ):
             skill = ROOT / "skills" / skill_name / "SKILL.md"
             text = skill.read_text()
             self.assertNotIn("[TODO:", text)
             self.assertIn(f"name: {skill_name}", text)
             for relative in __import__("re").findall(r"\]\((references/[^)]+\.md)\)", text):
                 self.assertTrue((skill.parent / relative).exists(), relative)
+
+    def test_manifest_describes_the_multi_agent_knowledge_product(self):
+        codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(codex["version"], "0.2.0")
+        self.assertIn("multi-agent", codex["description"])
+        self.assertIn("Contextual multi-agent reviews", codex["interface"]["capabilities"])
+        self.assertLessEqual(len(codex["interface"]["defaultPrompt"]), 3)
 
     def test_fixture_lockfiles_are_resolved_not_placeholders(self):
         uv_lock = (ROOT / "fixtures/minimal-cli/uv.lock").read_text()
@@ -121,7 +133,7 @@ class PackageContractTests(unittest.TestCase):
         for name in ("mixed-saas", "secure-saas"):
             fixture = ROOT / "fixtures" / name
             marker = json.loads(
-                (fixture / ".project-practices-fixture.json").read_text()
+                (fixture / ".best-practices-fixture.json").read_text()
             )
             self.assertEqual(
                 marker,

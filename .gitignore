@@ -1,5 +1,5 @@
-.project-practices-state.json
-.project-practices-tmp/
+.best-practices-state.json
+.best-practices-tmp/
 *.media.tmp
 __pycache__/
 *.pyc

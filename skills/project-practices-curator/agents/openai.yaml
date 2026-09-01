@@ -1,4 +1,0 @@
-interface:
-  display_name: "Project Practices Curator"
-  short_description: "Curate verified practices from videos"
-  default_prompt: "Use $project-practices-curator to analyze new videos and curate verified project practices."

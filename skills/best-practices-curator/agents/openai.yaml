@@ -1,0 +1,4 @@
+interface:
+  display_name: "Best Practices Curator"
+  short_description: "Review and maintain practice knowledge"
+  default_prompt: "Use $best-practices-curator to review and reconcile the existing practice catalog."

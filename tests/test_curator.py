@@ -13,17 +13,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COLLECTOR = ROOT / "skills/project-practices-curator/scripts/collect_instagram.py"
-STATE = ROOT / "skills/project-practices-curator/scripts/curation_state.py"
+COLLECTOR = ROOT / "skills/best-practices-curator/scripts/collect_instagram.py"
+STATE = ROOT / "skills/best-practices-curator/scripts/curation_state.py"
 
 COLLECTOR_SPEC = importlib.util.spec_from_file_location(
-    "project_practices_collect_instagram", COLLECTOR
+    "best_practices_collect_instagram", COLLECTOR
 )
 assert COLLECTOR_SPEC and COLLECTOR_SPEC.loader
 COLLECTOR_MODULE = importlib.util.module_from_spec(COLLECTOR_SPEC)
 COLLECTOR_SPEC.loader.exec_module(COLLECTOR_MODULE)
 
-STATE_SPEC = importlib.util.spec_from_file_location("project_practices_curation_state", STATE)
+STATE_SPEC = importlib.util.spec_from_file_location("best_practices_curation_state", STATE)
 assert STATE_SPEC and STATE_SPEC.loader
 STATE_MODULE = importlib.util.module_from_spec(STATE_SPEC)
 STATE_SPEC.loader.exec_module(STATE_MODULE)
