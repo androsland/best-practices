@@ -2,6 +2,22 @@
 
 This contract applies to the project mapper, every domain reviewer, the verifier, and the main audit operator.
 
+## Model input boundary
+
+Every model reviewer must receive a `model_input_plan` created under
+`references/model-data-boundary.md`. Treat its approved paths and excerpts as a strict allowlist.
+`<target-root>` is path context, not permission to scan the repository.
+
+- Do not read an excluded, untracked, ignored, or unlisted path.
+- Do not broaden a search, glob, or shell command beyond the approved scope.
+- Use redacted excerpts instead of raw personal, production, credential, or private
+  operational data.
+- If the plan is absent, return an explicit input-boundary error without inspecting the
+  target. If more evidence is necessary, return an `evidence_request` with the smallest
+  path and purpose; do not open it yourself.
+- Do not repeat repository material in the response when a path, line, and concise
+  behavior summary are sufficient.
+
 ## Evidence model
 
 The catalog is accumulated knowledge, not a set of filename checks. Inspect the implementation and explain how the relevant project flow behaves. Searches, inventories, manifests, dependencies, and scanners locate evidence; none proves a semantic conclusion alone.

@@ -206,6 +206,30 @@ class OrchestrationContractTests(unittest.TestCase):
         self.assertNotIn("audit_evidence.py", text)
         self.assertFalse((ROOT / "skills/best-practices-audit/scripts/audit_evidence.py").exists())
 
+    def test_audit_has_a_consent_and_minimization_gate_before_model_reviewers(self):
+        skill = (ROOT / "skills/best-practices-audit/SKILL.md").read_text()
+        boundary = (ROOT / "references/model-data-boundary.md").read_text()
+        contract = (ROOT / "references/reviewer-contract.md").read_text()
+        mapper = (ROOT / "agents/project-mapper.md").read_text()
+        verifier = (ROOT / "agents/verification-reviewer.md").read_text()
+
+        self.assertLess(skill.index("## Model data preflight"), skill.index("## Map, route, and review"))
+        for phrase in (
+            "hard launch gate",
+            "retention/training posture",
+            "invocation-specific user confirmation",
+            "model_input_plan",
+            "minimum-necessary",
+        ):
+            self.assertIn(phrase, skill)
+        self.assertIn("Always exclude credential values", boundary)
+        self.assertIn("The original request for an audit is not consent", boundary)
+        self.assertIn("must not rescan the whole repository", boundary)
+        self.assertIn("strict allowlist", contract)
+        self.assertIn("If the plan is absent", contract)
+        self.assertIn("Refuse to inspect the target if `model_input_plan` is absent", mapper)
+        self.assertIn("Do not start a whole-repository search", verifier)
+
     def test_reviewer_agents_pin_sonnet_medium_and_are_read_only(self):
         agents = sorted((ROOT / "agents").glob("*.md"))
         self.assertGreaterEqual(len(agents), 9)

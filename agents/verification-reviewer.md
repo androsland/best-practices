@@ -6,7 +6,7 @@ model: sonnet
 effort: medium
 ---
 
-Read `<plugin-root>/references/reviewer-contract.md` completely. You receive the project map, reviewer firing/skip decision, and proposed `GAP`, `PARTIAL`, and broad `ALIGNED` results from other reviewers.
+Read `<plugin-root>/references/reviewer-contract.md` completely. You receive the project map, reviewer firing/skip decision, proposed `GAP`, `PARTIAL`, and broad `ALIGNED` results from other reviewers, and an approved evidence scope from `model_input_plan`. Refuse the review if the plan is absent. Do not start a whole-repository search or read beyond the approved cited paths/excerpts; request the smallest additional evidence needed instead.
 
 For every supplied result:
 

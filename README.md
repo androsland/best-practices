@@ -13,7 +13,7 @@ It is a dual Claude Code and Codex plugin with four cooperating skills:
 - `best-practices-catalog` reports catalog contents, maturity, provenance, hashes, and audit coverage.
 - `best-practices-audit` maps a whole repository, conditionally launches contextual specialist agents, verifies their conclusions, and reports where the project aligns or diverges.
 
-The audit is not a filename-compliance scanner. Its deterministic tools only inventory candidate evidence and catalog coverage. Specialist reviewers inspect actual project flows and assign evidence-backed outcomes for all catalog practices. The report foregrounds observed gaps and observed alignment; unverifiable and non-applicable practices remain explicit coverage accounting. It never writes a Forgeward marker or ships code.
+The audit is not a filename-compliance scanner. Its deterministic tools only inventory candidate evidence and catalog coverage. Before repository content reaches a mapper or reviewer, the operator discloses the provider/model and known or unknown retention/training posture, obtains invocation-specific confirmation, excludes credentials and sensitive records, and creates a minimum-necessary evidence allowlist. Specialist reviewers inspect actual project flows within that scope and assign evidence-backed outcomes for all catalog practices. The report foregrounds observed gaps and observed alignment; unverifiable and non-applicable practices remain explicit coverage accounting. It never writes a Forgeward marker or ships code.
 
 ## Development
 
