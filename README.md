@@ -17,41 +17,60 @@ The audit is not a filename-compliance scanner. Its deterministic tools only inv
 
 ## Installation
 
-Clone the repository first:
+Only install plugins from sources you trust. A normal installation does not require cloning this
+repository.
+
+### Codex
+
+Add the GitHub marketplace and install the plugin directly:
+
+```bash
+codex plugin marketplace add androsland/best-practices
+codex plugin add best-practices@best-practices
+```
+
+Start a new Codex session so the bundled skills become available, then invoke a workflow explicitly,
+for example `$best-practices-audit`. You can also browse, install, enable, or remove plugins
+interactively with `/plugins`.
+
+Codex plugins are supported in Codex CLI and Codex in the ChatGPT desktop app, but not
+in the Codex IDE extension. See the official OpenAI documentation for
+[using plugins](https://learn.chatgpt.com/docs/plugins) and
+[building plugins](https://learn.chatgpt.com/docs/build-plugins).
+
+### Claude Code
+
+Add the same GitHub marketplace and install the plugin directly:
+
+```bash
+claude plugin marketplace add androsland/best-practices
+claude plugin install best-practices@best-practices
+```
+
+Start a new Claude Code session, then invoke a workflow explicitly, for example
+`/best-practices:best-practices-audit`. See Anthropic's documentation for
+[discovering and installing plugins](https://code.claude.com/docs/en/discover-plugins).
+
+### Local development
+
+Clone the repository only when developing or testing local changes:
 
 ```bash
 git clone https://github.com/androsland/best-practices.git
 cd best-practices
 ```
 
-### Codex
-
-Add the cloned plugin to a personal marketplace by asking Codex:
-
-```text
-$plugin-creator Add the existing plugin at /absolute/path/to/best-practices
-to my personal marketplace. Do not modify the plugin source.
-```
-
-Then:
-
-1. Restart or refresh Codex.
-2. In Codex CLI, enter `/plugins`.
-3. Open the Personal marketplace, select **Best Practices**, and install it.
-4. Start a new Codex session so the bundled skills become available.
-5. Invoke a workflow explicitly, for example `$best-practices-audit`.
-
-Codex plugins are supported in Codex CLI and Codex in the ChatGPT desktop app, but not
-in the Codex IDE extension. See the official OpenAI documentation for
-[using plugins](https://learn.chatgpt.com/docs/plugins) and
-[building local plugins](https://learn.chatgpt.com/docs/build-plugins).
-
-### Claude Code development
-
-Load the clone directly while developing or testing the plugin:
+Load the clone for one Claude Code session:
 
 ```bash
 claude --plugin-dir /absolute/path/to/best-practices
+```
+
+For Codex, register the clone as a local marketplace and install from it:
+
+```bash
+codex plugin marketplace add /absolute/path/to/best-practices
+codex plugin add best-practices@best-practices
 ```
 
 ## Development

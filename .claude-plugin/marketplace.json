@@ -1,0 +1,29 @@
+{
+  "name": "best-practices",
+  "description": "Knowledge-driven, multi-agent whole-project reviews and provenance-preserving practice curation.",
+  "owner": {
+    "name": "Best Practices maintainers"
+  },
+  "plugins": [
+    {
+      "name": "best-practices",
+      "source": "./",
+      "description": "Knowledge-driven, multi-agent whole-project reviews and provenance-preserving practice curation.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Best Practices maintainers"
+      },
+      "homepage": "https://github.com/androsland/best-practices",
+      "repository": "https://github.com/androsland/best-practices",
+      "license": "MIT",
+      "keywords": [
+        "audit",
+        "engineering-practices",
+        "security",
+        "reliability",
+        "ai-agents"
+      ],
+      "category": "development"
+    }
+  ]
+}
